@@ -45,4 +45,6 @@ swift run BigWaterChecks
 
 核心检查覆盖休眠续计、跨日、作息与周末窗口、校时和时区、进度恢复、暂停、延后、记录及像素动画。会话检查直接运行实际 App 类，在隔离偏好域里发送进程内通知，核对窗口、按钮、计时和保存的连接；需要亮屏的 macOS 桌面会话。检查不会让电脑休眠或修改系统时间。
 
-`BigWaterCore` 管理计时、配置、记录和动画状态，`BigWaterArt` 绘制像素角色、水瓶及配色，`BigWater` 管理菜单栏、设置、保存和桌面窗口。`BigWaterArtwork` 生成图标与动作预览。构建输出还包括 `dist/Artwork/storyboard.png` 与 `animation.gif`，复用实际 App 的绘制代码。
+`BigWaterCore` 管理计时、配置、记录和动画状态，`BigWaterArt` 绘制像素角色、水瓶及配色，`BigWaterApp` 管理菜单栏、设置、保存和桌面窗口，`BigWater` 只负责启动它。`BigWaterArtwork` 生成图标与动作预览。
+
+`BigWaterSessionChecks` 通过 `@testable import BigWaterApp` 驱动实际的 App 类，只在 debug 构建中编译；核心检查和 App 构建在 GitHub Actions 中运行（拉取请求或手动触发）。构建输出还包括 `dist/Artwork/storyboard.png` 与 `animation.gif`，复用实际 App 的绘制代码。

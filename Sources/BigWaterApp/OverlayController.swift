@@ -16,8 +16,8 @@ final class OverlayController {
     private var characterPanels: [OverlayPanel] = []
     /// Opaque reminder surfaces (compact card, speech bubble) that swallow
     /// clicks instead of passing them to the app underneath.
-    private var blockerPanels: [OverlayPanel] = []
-    private var buttonPanels: [OverlayPanel] = []
+    private(set) var blockerPanels: [OverlayPanel] = []
+    private(set) var buttonPanels: [OverlayPanel] = []
     private var buttonViews: [OverlayButtonView] = []
     private var canvas: AnimationCanvas?
     private var scene: ReminderScene?
@@ -377,7 +377,7 @@ final class OverlayController {
     }
 }
 
-private final class OverlayPanel: NSPanel {
+final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }

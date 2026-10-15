@@ -183,11 +183,15 @@
 
 ### T1. 会话检查通过反射读取私有属性，名字一改就直接崩溃
 
+> **已修复**（分支 `fix-t1-t4-tests`）：会话检查改为 `@testable import BigWaterApp`，直接读取 AppDelegate 和覆盖层中标为 `private(set)` 的状态，不再使用 `Mirror`；改名会变成编译错误。
+
 - **位置**：[SessionChecks.swift:20](Tests/BigWaterSessionTests/SessionChecks.swift#L20)
 - **现象**：`Mirror(...).first { $0.label == label }!.value as! T` 依赖属性名，任何一次重命名都会让检查程序崩溃，而不是给出清楚的失败信息。
 - **建议**：给 AppDelegate 加一个只在测试中使用的状态访问接口，或者把状态逻辑抽到可测试的类型里。
 
 ### T2. 会话检查的通过数是写死的，并且遇到第一个失败就停止
+
+> **已修复**：通过数由实际通过的检查累计得出；检查拆成 4 个独立场景（日常流程、存档兼容、覆盖层时序与输入、系统状态与菜单动作），各自使用隔离的偏好设置和新的 App 实例，一个场景失败不影响其他场景。日常流程本身是连续剧情，仍在首个失败处停止。
 
 - **位置**：[SessionChecks.swift:277](Tests/BigWaterSessionTests/SessionChecks.swift#L277)
 - **现象**：`"16/16"` 是固定字符串，增删检查后不会自动更新；所有步骤串成一条长场景，前面一步失败，后面全部不跑。
@@ -195,11 +199,15 @@
 
 ### T3. `check-session.sh` 直接链接 SwiftPM 的中间产物
 
+> **已修复**：App 的类移入 `BigWaterApp` library，`BigWater` 可执行目标只调用 `runBigWaterApp()`；会话检查成为 `Package.swift` 中的 `BigWaterSessionChecks` 目标，脚本改为 `swift run BigWaterSessionChecks`。`build.sh` 的 release 构建只构建 `BigWater` 与 `BigWaterArtwork`。
+
 - **位置**：[check-session.sh:16](Tools/check-session.sh#L16)
 - **现象**：脚本依赖 `.build/.../BigWaterCore.build/*.swift.o` 这种内部目录结构，工具链升级就可能失效。
 - **建议**：把 `BigWater` 里的业务类拆成一个 library target（例如 `BigWaterApp`），会话检查作为 `Package.swift` 里的普通 executable target 依赖它。
 
 ### T4. 缺少几个关键回归测试
+
+> **已修复**：三项回归测试已在 H1、M1、M2 的修复中加入。新增 GitHub Actions 工作流 `.github/workflows/checks.yml`，在 macOS 上构建 App 并运行核心检查；因为私有仓库的 macOS 分钟数计费较高，只在拉取请求和手动触发时运行。**该工作流尚未在 GitHub 上实际运行过。**
 
 - 存储格式兼容：旧格式样本、缺字段、未知枚举（对应 H1）；
 - `overlay.start()` 失败时的重试节奏（对应 M1）；

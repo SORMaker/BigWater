@@ -4,7 +4,9 @@ set -euo pipefail
 task_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$task_root"
 
-swift build -c release
+# The session checks use @testable and only build in debug.
+swift build -c release --product BigWater
+swift build -c release --product BigWaterArtwork
 task_bin_dir="$(swift build -c release --show-bin-path)"
 task_app="$task_root/dist/Big Water.app"
 task_art="$task_root/dist/Artwork"

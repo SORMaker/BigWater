@@ -7,19 +7,20 @@ import BigWaterArt
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    // State marked private(set) is read by the session checks via @testable.
     private static let loginPreferenceKey = "launchAtLogin"
     static let presentationRetryDelay: TimeInterval = 30
     private let logger = Logger(subsystem: "com.oil.bigwater", category: "reminders")
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
-    private let overlay = OverlayController()
+    let overlay = OverlayController()
     private var overlayDay: DateComponents?
-    private var isPreviewing = false
-    private var configuration = AppPreferences()
-    private var history = HydrationHistory()
-    private var schedule = ReminderSchedule()
-    private var settings: SettingsModel!
-    private var reminderTimer: Timer?
+    private(set) var isPreviewing = false
+    private(set) var configuration = AppPreferences()
+    private(set) var history = HydrationHistory()
+    private(set) var schedule = ReminderSchedule()
+    private(set) var settings: SettingsModel!
+    private(set) var reminderTimer: Timer?
     private var checkpointTimer: Timer?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var isSleeping = false
