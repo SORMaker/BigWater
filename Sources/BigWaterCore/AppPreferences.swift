@@ -14,6 +14,13 @@ public struct DailyHours: Codable, Equatable {
     public var isValid: Bool {
         startMinutes >= 0 && startMinutes < endMinutes && endMinutes <= 1_440
     }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = DailyHours()
+        startMinutes = values.lenientValue(Int.self, forKey: .startMinutes) ?? defaults.startMinutes
+        endMinutes = values.lenientValue(Int.self, forKey: .endMinutes) ?? defaults.endMinutes
+    }
 }
 
 public enum ReminderStyle: String, Codable, CaseIterable {
@@ -40,6 +47,13 @@ public struct ReminderAppearance: Codable, Equatable {
         self.theme = theme
         self.character = character
     }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = ReminderAppearance()
+        theme = values.lenientValue(ReminderTheme.self, forKey: .theme) ?? defaults.theme
+        character = values.lenientValue(ReminderCharacter.self, forKey: .character) ?? defaults.character
+    }
 }
 
 /// User-controlled settings shared by the app, settings UI, and reminder
@@ -54,12 +68,33 @@ public struct AppPreferences: Codable, Equatable {
 
     public init() {}
 
+    /// Settings saved by older or newer builds keep every value this build
+    /// understands; missing, mistyped or unknown values fall back to defaults.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppPreferences()
+        intervalHours = values.lenientValue(Double.self, forKey: .intervalHours) ?? defaults.intervalHours
+        weekdayHours = values.lenientValue(DailyHours.self, forKey: .weekdayHours) ?? defaults.weekdayHours
+        weekendHours = values.lenientValue(DailyHours.self, forKey: .weekendHours)
+        style = values.lenientValue(ReminderStyle.self, forKey: .style) ?? defaults.style
+        soundEnabled = values.lenientValue(Bool.self, forKey: .soundEnabled) ?? defaults.soundEnabled
+        appearance = values.lenientValue(ReminderAppearance.self, forKey: .appearance) ?? defaults.appearance
+    }
+
     public func validated() -> AppPreferences {
         var result = self
         result.intervalHours = ReminderSchedule.validated(intervalHours)
         if !result.weekdayHours.isValid { result.weekdayHours = .init() }
         if let weekendHours, !weekendHours.isValid { result.weekendHours = nil }
         return result
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// A missing, mistyped or unknown value reads as nil instead of failing
+    /// the surrounding value.
+    func lenientValue<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+        try? decodeIfPresent(type, forKey: key)
     }
 }
 

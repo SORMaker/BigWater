@@ -38,6 +38,8 @@
 
 ### H1. 存储格式不兼容时，全部状态（包括喝水记录）被静默清空
 
+> **已修复**（分支 `fix-h1-storage-decode`）：设置、外观、作息和记录改为宽松解码，缺失、类型不符或未知的值回退到默认值，记录里读不出的单条会被跳过；三个部分各自独立解码；任何无法原样写回的存档，会在下一次保存前另存为 `appStateV1.unreadable.<时间>`。新增 3 项核心检查（含 0.3.0 真实存档样本）和 2 项会话检查，修复前失败、修复后通过：核心 28/28，会话 18/18。原复现探针：5 条记录 → 5 条（修复前为 0 条）。
+
 - **位置**：[AppStorage.swift:36-39](Sources/BigWater/AppStorage.swift#L36)、[AppDelegate.swift:52-53](Sources/BigWater/AppDelegate.swift#L52)、[AppDelegate.swift:234](Sources/BigWater/AppDelegate.swift#L234)
 - **现象**：`load()` 用 `try? JSONDecoder().decode(State.self, …)` 解码。Swift 自动合成的 `Codable` 要求每个键都存在，属性的默认值（例如 `soundEnabled: Bool = false`）**不会**用来补缺失的键；遇到未知的枚举值也会直接失败。只要解码失败，`loadHistory()` 就返回空记录。随后启动流程中的 `checkReminder()` 会无条件调用 `persistProgress()`，用空记录覆盖 `appStateV1`。
 - **触发条件**：

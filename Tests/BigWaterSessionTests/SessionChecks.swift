@@ -265,6 +265,33 @@ private final class SessionChecks {
             }
         }
         print("PASS: reminder and preview button layouts stay inside the visible display")
+
+        // A state written by a different build: one key missing, one unknown value.
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        try expect(!preferences.dictionaryRepresentation().keys.contains { $0.hasPrefix("appStateV1.unreadable.") },
+                   "This build's own saved state was treated as unreadable")
+        let otherBuild = #"{"preferences":{"intervalHours":1.5,"style":"compact","weekdayHours":{"endMinutes":1320,"startMinutes":360},"appearance":{"character":"droplet","theme":"ocean"}},"history":{"drinks":[813717000,813720540]},"progress":{"remainingTime":"later"}}"#
+        preferences.set(Data(otherBuild.utf8), forKey: "appStateV1")
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        try expect(property("history", as: HydrationHistory.self).drinks.count == 2,
+                   "A schema mismatch hid the saved drink history")
+        try expect(property("configuration", as: AppPreferences.self).intervalHours == 1.5
+                   && property("configuration", as: AppPreferences.self).style == .compact,
+                   "A schema mismatch discarded readable preferences")
+        try expect(AppStorage(defaults: preferences).loadHistory().drinks.count == 2,
+                   "Launch-time save overwrote the drink history")
+        print("PASS: a state from another build keeps its history and readable settings")
+
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        let unreadable = Data(#"{"history":{"drinks":"#.utf8)
+        preferences.set(unreadable, forKey: "appStateV1")
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        let backups = preferences.dictionaryRepresentation().filter { $0.key.hasPrefix("appStateV1.unreadable.") }
+        try expect(backups.values.contains { $0 as? Data == unreadable },
+                   "Unreadable saved state was overwritten without a backup")
+        print("PASS: unreadable saved state is backed up before the first save")
     }
 }
 
@@ -274,7 +301,7 @@ private enum BigWaterSessionChecks {
         _ = NSApplication.shared
         do {
             try MainActor.assumeIsolated { try SessionChecks().run() }
-            print("16/16 session checks passed")
+            print("18/18 session checks passed")
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             exit(1)

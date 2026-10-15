@@ -309,6 +309,45 @@ struct ReminderChecks {
                    "Drink history was not returned in chronological order")
     }
 
+    /// Saved exactly as 0.3.0 wrote it, so later model changes keep reading it.
+    static let version030State = #"{"preferences":{"intervalHours":2,"style":"compact","weekdayHours":{"endMinutes":1320,"startMinutes":360},"weekendHours":{"startMinutes":600,"endMinutes":1080},"soundEnabled":false,"appearance":{"character":"droplet","theme":"mint"}},"history":{"drinks":[813717000,813720540]},"progress":{"weekdayHours":{"endMinutes":1320,"startMinutes":360},"weekendHours":{"endMinutes":1080,"startMinutes":600},"capturedDay":{"isLeapMonth":false,"year":2026,"day":15,"month":10,"era":1},"remainingTime":7200,"isAwaitingAcknowledgment":false,"isSnoozed":false,"timeZoneIdentifier":"Asia\/Shanghai","intervalHours":2,"capturedAt":813720600}}"#
+
+    func version030StateStillDecodes() throws {
+        let root = try JSONSerialization.jsonObject(with: Data(Self.version030State.utf8)) as! [String: Any]
+        func section(_ key: String) throws -> Data { try JSONSerialization.data(withJSONObject: root[key]!) }
+        let preferences = try JSONDecoder().decode(AppPreferences.self, from: section("preferences"))
+        try expect(preferences.style == .compact && preferences.weekendHours?.startMinutes == 600
+                   && preferences.appearance == ReminderAppearance(theme: .mint, character: .droplet),
+                   "0.3.0 preferences changed meaning")
+        let history = try JSONDecoder().decode(HydrationHistory.self, from: section("history"))
+        try expect(history.drinks.count == 2, "0.3.0 drink history was not restored")
+        let progress = try JSONDecoder().decode(ReminderSnapshot.self, from: section("progress"))
+        try expect(progress.remainingTime == 7_200 && progress.timeZoneIdentifier == "Asia/Shanghai",
+                   "0.3.0 progress was not restored")
+    }
+
+    func storedPreferencesTolerateMissingAndUnknownValues() throws {
+        // An older build lacks newer keys; a newer build may store values this build doesn't know.
+        let json = #"{"intervalHours":3,"style":"bubbles","weekdayHours":{"startMinutes":420},"appearance":{"theme":"ocean","character":"droplet"},"futureOption":true}"#
+        let preferences = try JSONDecoder().decode(AppPreferences.self, from: Data(json.utf8)).validated()
+        try expect(preferences.intervalHours == 3, "Known interval was discarded with unknown neighbours")
+        try expect(preferences.style == .animated && !preferences.soundEnabled, "Unknown or missing options did not use defaults")
+        try expect(preferences.weekdayHours == DailyHours(startMinutes: 420, endMinutes: 1_320),
+                   "A partial window did not keep its known start")
+        try expect(preferences.appearance == ReminderAppearance(theme: .blue, character: .droplet),
+                   "Unknown theme discarded the known character")
+        let empty = try JSONDecoder().decode(AppPreferences.self, from: Data("{}".utf8))
+        try expect(empty == AppPreferences(), "Empty preferences did not use defaults")
+    }
+
+    func storedHistoryKeepsReadableDrinks() throws {
+        let json = #"{"drinks":[813717000,"not a date",null,813720540]}"#
+        let history = try JSONDecoder().decode(HydrationHistory.self, from: Data(json.utf8))
+        try expect(history.drinks.count == 2, "One unreadable entry discarded the whole drink history")
+        let missing = try JSONDecoder().decode(HydrationHistory.self, from: Data("{}".utf8))
+        try expect(missing.drinks.isEmpty, "Missing history did not decode as empty")
+    }
+
     func slideThrowClickAndClimb() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
         try expect(scene.characterPosition.y < 0, "Claude did not start above screen")
@@ -409,6 +448,9 @@ enum BigWaterChecks {
             ("future manual pause survives a cross-day restart", suite.futurePauseRestoresAcrossLocalDayBoundary),
             ("snooze uses a short interval and keeps the normal interval", suite.snoozeUsesShortActiveIntervalAndKeepsNormalInterval),
             ("drink history counts explicit confirmations by local day", suite.hydrationHistoryCountsExplicitDrinksByLocalDay),
+            ("state saved by 0.3.0 still decodes", suite.version030StateStillDecodes),
+            ("stored preferences tolerate missing and unknown values", suite.storedPreferencesTolerateMissingAndUnknownValues),
+            ("stored history keeps readable drinks", suite.storedHistoryKeepsReadableDrinks),
             ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),
             ("early click during descent", suite.earlyClickDuringDescent),
             ("bounded objects over a long reminder", suite.persistentReminderHasBoundedParticles),

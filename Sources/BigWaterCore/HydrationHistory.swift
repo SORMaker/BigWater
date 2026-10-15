@@ -8,6 +8,18 @@ public struct HydrationHistory: Codable, Equatable {
         drinks = []
     }
 
+    /// One unreadable entry must not discard the rest of the user's history.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        drinks = (values.lenientValue([ReadableDate].self, forKey: .drinks) ?? [])
+            .compactMap(\.date).sorted()
+    }
+
+    private struct ReadableDate: Decodable {
+        let date: Date?
+        init(from decoder: Decoder) throws { date = try? decoder.singleValueContainer().decode(Date.self) }
+    }
+
     public mutating func recordDrink(at date: Date) {
         drinks.append(date)
         drinks.sort()
