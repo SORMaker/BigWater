@@ -59,6 +59,8 @@
 
 ### M1. 提醒到期但覆盖层无法启动时，以 10 Hz 忙等并反复写入 UserDefaults
 
+> **已修复**（分支 `fix-m1-m4-overlay`）：仍处于到期状态说明没能弹出提醒，此时改为 30 秒后重试；退场动画结束时覆盖层回调 `onFinished`，立即重新检查，下一次提醒不必等待重试。会话检查覆盖“到期时上一个退场动画仍在播放”的场景。
+
 - **位置**：[AppDelegate.swift:198-202](Sources/BigWater/AppDelegate.swift#L198)、[AppDelegate.swift:247-248](Sources/BigWater/AppDelegate.swift#L247)、[OverlayController.swift:36](Sources/BigWater/OverlayController.swift#L36)、[OverlayController.swift:321-323](Sources/BigWater/OverlayController.swift#L321)
 - **现象**：`overlay.start()` 在 `preferredScreen()` 返回 nil 时会失败，此时 `presentReminder` 直接返回，`schedule` 仍处于到期状态。到期状态下 `nextCheckAt` 等于当前时间（探针 P2），于是定时器按 `max(…, 0.1)` 每 0.1 秒触发一次 `checkReminder()`，而每次都会执行 `persistProgress()`，整块写入状态。
 - **触发条件**：`NSScreen.screens` 为空，或 `NSScreen.main` 为 nil，但 `isScreenAwake` 仍为 true。例如无显示器的 Mac mini、合盖后拔掉外接显示器但被 caffeinate 等工具保持唤醒、显示器重新配置的过程中。预览被挂起时恰好到期，也会走到同一条路径。
@@ -66,17 +68,23 @@
 
 ### M2. 动画模式的按钮跟着角色持续晃动（约 12×6pt），点击可能落空
 
+> **已修复**：按钮锚定在固定的 `scene.target`，位置不再逐帧变化，未变化时也不再调用 `setFrame`。会话检查在真实动画中确认，一个扔水周期内按钮位置完全不变。
+
 - **位置**：[OverlayControls.swift:26-30](Sources/BigWater/OverlayControls.swift#L26)、[ReminderScene.swift:70-74](Sources/BigWaterCore/ReminderScene.swift#L70)、[OverlayControls.swift:198-203](Sources/BigWater/OverlayControls.swift#L198)
 - **现象**：按钮的位置由 `scene.characterPosition` 计算，而角色在提醒阶段有正弦摆动和扔水后坐力，按钮每帧（30fps）都随之移动。探针 P4 测得水平移动约 11.7pt，垂直约 6pt。`mouseUp` 用“按钮当前位置”判断光标是否仍在按钮内，如果按下和松开之间窗口移动了，在按钮边缘附近点击会被静默忽略。光标不动时，按钮也会在其下方移进移出，悬停状态随之闪烁。
 - **建议**：按钮锚定在固定的 `scene.target`，不跟随动画偏移；只在位置真的变化时才调用 `setFrame`。
 
 ### M3. 动画提醒期间每秒 30 次全屏重绘，并移动约 18 个窗口
 
+> **已修复**：动画帧只重绘上一帧和本帧各元素（绳子、角色、气泡、每个水瓶和水花）所在的矩形，覆盖范围由 `SceneRenderer.paintedRegions` 计算，并用逐像素渲染检查保证不漏画；位置没变的点击窗口和按钮窗口跳过 `setFrame`。按 1440×900 屏幕测算，每帧重绘面积从 100% 降到约 10%（Claude）和 7%（水滴）。**未做**：长时间无人点击时降低帧率，这次也没有实测 CPU 和功耗。
+
 - **位置**：[OverlayController.swift:176-196](Sources/BigWater/OverlayController.swift#L176)、[OverlayController.swift:235-236](Sources/BigWater/OverlayController.swift#L235)、[OverlayController.swift:261](Sources/BigWater/OverlayController.swift#L261)、[OverlayController.swift:294](Sources/BigWater/OverlayController.swift#L294)
 - **现象**：每帧执行 `canvas.needsDisplay = true`，整块与屏幕同尺寸的画布都要重绘；同时对 14–15 个角色点击窗口（探针 P4）和 3 个按钮窗口逐一 `setFrame`，按钮窗口还带 `display: true`。提醒在用户点击之前不会消失，人离开但屏幕常亮时（例如关闭了自动熄屏），这个开销会一直持续。这里没有实测 CPU 和功耗。
 - **建议**：只重绘角色、水瓶和水花外接矩形的并集（`setNeedsDisplay(_:)`）；帧之间矩形没变就跳过 `setFrame`；提醒持续几分钟后降低帧率；或者改用 CALayer 绘制精灵，并设置 `magnificationFilter = .nearest`。
 
 ### M4. 轻量卡片和对话气泡看得见但点不到，点击会穿透到下面的应用
+
+> **已修复**：轻量卡片主体和提醒阶段的对话气泡下方新增吞掉点击的输入面板，区域与实际绘制的像素一致（逐像素检查），面板被画面完全覆盖、看不见。README 已同步说明。
 
 - **位置**：[OverlayController.swift:43](Sources/BigWater/OverlayController.swift#L43)、[OverlayController.swift:221-228](Sources/BigWater/OverlayController.swift#L221)
 - **现象**：画布窗口设置了 `ignoresMouseEvents = true`。轻量模式下只有三个按钮有输入窗口，卡片本身（标题、图标、说明文字）没有。用户点卡片时，点击会落到它下面的应用：可能把光标放进编辑器、点中链接或者选中文件。动画模式的“WATER TIME”气泡也是这样。README 写的是“透明区域允许鼠标穿透”，但卡片和气泡都不透明。
@@ -133,6 +141,8 @@
 - **建议**：等待确认时，在面板里也放上这三个动作，复用 `acknowledged` 和 `snooze`。
 
 ### L7. “预览当前效果”按钮的可用状态可能过期
+
+> **已顺带修复**：M1 新增的 `onFinished` 回调会触发 `checkReminder()`，设置面板随之刷新。
 
 - **位置**：[AppDelegate.swift:278](Sources/BigWater/AppDelegate.swift#L278)、[OverlayController.swift:191-192](Sources/BigWater/OverlayController.swift#L191)
 - **现象**：`canPreview` 只在 `updateSettings()` 里刷新。真实提醒的退场动画结束后，`stop()` 不会通知 AppDelegate。如果在角色爬绳的约 2.6 秒内打开面板，预览按钮会一直保持禁用，直到下一次检查点（最长 30 秒）。

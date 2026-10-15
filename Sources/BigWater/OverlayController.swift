@@ -9,9 +9,14 @@ final class OverlayController {
     var onDrink: (() -> Void)?
     var onSnooze: ((Int) -> Void)?
     var onPreviewEnd: (() -> Void)?
+    /// The exit animation completed on its own and the overlay is gone.
+    var onFinished: (() -> Void)?
 
     private var canvasPanel: OverlayPanel?
     private var characterPanels: [OverlayPanel] = []
+    /// Opaque reminder surfaces (compact card, speech bubble) that swallow
+    /// clicks instead of passing them to the app underneath.
+    private var blockerPanels: [OverlayPanel] = []
     private var buttonPanels: [OverlayPanel] = []
     private var buttonViews: [OverlayButtonView] = []
     private var canvas: AnimationCanvas?
@@ -22,6 +27,7 @@ final class OverlayController {
     private var isPreview = false
     private var actionInvoked = false
     private var lastFrameTime = 0.0
+    private var lastPaintedRegions: [CGRect] = []
     private var isSuspended = false
 
     var isActive: Bool { scene != nil }
@@ -121,6 +127,7 @@ final class OverlayController {
         timer = nil
         canvasPanel?.orderOut(nil)
         characterPanels.forEach { $0.orderOut(nil) }
+        blockerPanels.forEach { $0.orderOut(nil) }
         buttonPanels.forEach { $0.orderOut(nil) }
     }
 
@@ -155,9 +162,12 @@ final class OverlayController {
         timer = nil
         canvasPanel?.close()
         characterPanels.forEach { $0.close() }
+        blockerPanels.forEach { $0.close() }
         buttonPanels.forEach { $0.close() }
         canvasPanel = nil
         characterPanels.removeAll()
+        blockerPanels.removeAll()
+        lastPaintedRegions = []
         buttonPanels.removeAll()
         buttonViews.removeAll()
         canvas = nil
@@ -190,16 +200,20 @@ final class OverlayController {
         scene?.advance(by: elapsed)
         if scene?.phase == .finished {
             stop()
+            onFinished?()
         } else {
-            updateWindows()
+            updateWindows(fullRedraw: false)
         }
     }
 
-    private func updateWindows() {
+    /// Animation frames redraw only what moved; every other update (start,
+    /// resume, screen or state changes) repaints the whole canvas.
+    private func updateWindows(fullRedraw: Bool = true) {
         guard let scene, let screen else { return }
         guard !isSuspended else { return }
 
         var characterGlobalRegions: [CGRect] = []
+        var blockerRegions: [CGRect] = []
         var buttonSpecs: [OverlayButtonSpec] = []
         var previewBadge: CGRect?
 
@@ -213,27 +227,43 @@ final class OverlayController {
                                                              isPreview: isPreview)
                 buttonSpecs = layout.buttons
                 previewBadge = layout.badge
+                if scene.phase == .reminding {
+                    blockerRegions = SceneRenderer.speechRegions(for: scene).map { screenRect(for: $0, on: screen) }
+                }
             }
             let hovered = characterGlobalRegions.contains { $0.contains(NSEvent.mouseLocation) }
             self.scene?.isHovered = hovered
-            characterPanels = synchronizeCharacterPanels(characterGlobalRegions)
+            synchronize(&characterPanels, to: characterGlobalRegions) { [weak self] in
+                let target = ClaudeClickTarget(frame: .zero)
+                target.onClick = { self?.acknowledge() }
+                return target
+            }
             canvas?.compactCardFrame = nil
         } else {
             let layout = OverlayControls.compactLayout(visibleBounds: localVisibleBounds(for: screen),
                                                        isPreview: isPreview)
             buttonSpecs = layout.buttons
+            blockerRegions = OverlayControls.compactCardRegions(layout.card).map { screenRect(for: $0, on: screen) }
             characterPanels.forEach { $0.orderOut(nil) }
             canvas?.compactCardFrame = layout.card
             self.scene?.isHovered = false
         }
 
+        synchronize(&blockerPanels, to: blockerRegions) { ClickBlocker(frame: .zero) }
         synchronizeButtonPanels(buttonSpecs, on: screen, theme: scene.appearance.theme)
         canvas?.previewBadgeFrame = previewBadge
         canvas?.reminderAppearance = scene.appearance
         canvas?.isPreview = isPreview
         canvas?.isCompact = style == .compact
         canvas?.scene = self.scene
-        canvas?.needsDisplay = true
+        let painted = style == .animated ? SceneRenderer.paintedRegions(of: self.scene ?? scene) : []
+        if fullRedraw || style != .animated || lastPaintedRegions.isEmpty {
+            canvas?.needsDisplay = true
+        } else {
+            // Clear where the previous frame painted and draw the new frame.
+            (lastPaintedRegions + painted).forEach { canvas?.setNeedsDisplay($0) }
+        }
+        lastPaintedRegions = painted
 
         let accessibilityRegions = style == .animated ? characterGlobalRegions : []
         let characterLabel = scene.appearance.character == .claude ? "Claude" : "水滴精灵"
@@ -247,24 +277,24 @@ final class OverlayController {
                                     })
     }
 
-    private func synchronizeCharacterPanels(_ regions: [CGRect]) -> [OverlayPanel] {
-        while characterPanels.count < regions.count {
+    /// Input panels sit one level below the canvas, which paints the same
+    /// pixels above them. Unchanged frames are left alone.
+    private func synchronize(_ panels: inout [OverlayPanel], to regions: [CGRect],
+                             makeContent: () -> NSView) {
+        while panels.count < regions.count {
             let panel = makePanel(frame: .zero, ignoresMouse: false)
             panel.setAccessibilityElement(false)
-            let target = ClaudeClickTarget(frame: .zero)
-            target.onClick = { [weak self] in self?.acknowledge() }
-            panel.contentView = target
-            characterPanels.append(panel)
+            panel.contentView = makeContent()
+            panels.append(panel)
         }
-        for (index, panel) in characterPanels.enumerated() {
+        for (index, panel) in panels.enumerated() {
             if index < regions.count {
-                panel.setFrame(regions[index], display: false)
+                if panel.frame != regions[index] { panel.setFrame(regions[index], display: false) }
                 if !panel.isVisible { panel.orderFrontRegardless() }
-            } else {
+            } else if panel.isVisible {
                 panel.orderOut(nil)
             }
         }
-        return characterPanels
     }
 
     private func synchronizeButtonPanels(_ specs: [OverlayButtonSpec], on screen: NSScreen,
@@ -291,8 +321,11 @@ final class OverlayController {
             let spec = specs[index]
             let view = buttonViews[index]
             view.onPress = { [weak self] in self?.perform(spec.action) }
-            buttonPanels[index].setFrame(screenRect(for: spec.frame, on: screen), display: true)
-            view.frame = CGRect(origin: .zero, size: spec.frame.size)
+            let frame = screenRect(for: spec.frame, on: screen)
+            if buttonPanels[index].frame != frame {
+                buttonPanels[index].setFrame(frame, display: true)
+                view.frame = CGRect(origin: .zero, size: spec.frame.size)
+            }
             if !buttonPanels[index].isVisible { buttonPanels[index].orderFrontRegardless() }
         }
     }
@@ -434,4 +467,23 @@ private final class ClaudeClickTarget: NSView {
         dirtyRect.fill()
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Catches clicks on an opaque reminder surface so they do nothing, rather
+/// than reaching whatever app is underneath. The canvas paints over it.
+@MainActor
+private final class ClickBlocker: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func rightMouseDown(with event: NSEvent) {}
+    override func draw(_ dirtyRect: NSRect) {
+        WaterPalette.cream.setFill()
+        dirtyRect.fill()
+    }
 }

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import BigWaterCore
 import BigWaterArt
 
@@ -348,6 +348,58 @@ struct ReminderChecks {
         try expect(missing.drinks.isEmpty, "Missing history did not decode as empty")
     }
 
+    /// Renders a frame at 1× and calls `visit` with each pixel's alpha, in the
+    /// scene's top-left coordinates.
+    private func eachPixel(of scene: ReminderScene, _ visit: (Int, Int, UInt8) throws -> Void) rethrows {
+        let image = PixelArt.image(size: scene.viewport, backingScale: 1) { SceneRenderer.draw(scene, in: $0) }
+        let bitmap = image.representations.first as! NSBitmapImageRep
+        let data = bitmap.bitmapData!
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                try visit(x, y, data[y * bitmap.bytesPerRow + x * 4 + 3])
+            }
+        }
+    }
+
+    func paintedRegionsCoverEveryDrawnPixel() throws {
+        for character in ReminderCharacter.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 640, height: 420),
+                                      appearance: ReminderAppearance(character: character))
+            var steps = [0.2, 0.9, 0.95, 0.6, 0.35, 0.45, 0.7, 1.1, 0.3, 0.5, 0.25, 0.8]
+            var frame = 0
+            while scene.phase != .finished, !steps.isEmpty {
+                scene.advance(by: steps.removeFirst())
+                frame += 1
+                if frame == 9 { scene.acknowledge() }
+                let regions = SceneRenderer.paintedRegions(of: scene)
+                try eachPixel(of: scene) { x, y, alpha in
+                    let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+                    if alpha > 0 && !regions.contains(where: { $0.contains(point) }) {
+                        throw CheckFailure(description: "\(character) \(scene.phase) painted (\(x), \(y)) outside its redraw bounds")
+                    }
+                }
+            }
+        }
+        var idle = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
+        idle.advance(by: 30)
+        let area = SceneRenderer.paintedRegions(of: idle).reduce(0) { $0 + $1.width * $1.height }
+        try expect(area < 1_440 * 900 * 0.15, "Redraw regions cover much of the screen")
+    }
+
+    func speechBubbleClickRegionsAreFullyPainted() throws {
+        var scene = ReminderScene(viewport: CGSize(width: 900, height: 600))
+        try expect(SceneRenderer.speechRegions(for: scene).isEmpty, "Hidden bubble blocks clicks")
+        scene.advance(by: 2.3)
+        let regions = SceneRenderer.speechRegions(for: scene)
+        try expect(regions.count == 2, "Visible bubble has no click regions")
+        try eachPixel(of: scene) { x, y, alpha in
+            let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+            if alpha < 255 && regions.contains(where: { $0.contains(point) }) {
+                throw CheckFailure(description: "Bubble click region is not painted at (\(x), \(y))")
+            }
+        }
+    }
+
     func slideThrowClickAndClimb() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
         try expect(scene.characterPosition.y < 0, "Claude did not start above screen")
@@ -451,6 +503,8 @@ enum BigWaterChecks {
             ("state saved by 0.3.0 still decodes", suite.version030StateStillDecodes),
             ("stored preferences tolerate missing and unknown values", suite.storedPreferencesTolerateMissingAndUnknownValues),
             ("stored history keeps readable drinks", suite.storedHistoryKeepsReadableDrinks),
+            ("redraw regions cover every drawn pixel", suite.paintedRegionsCoverEveryDrawnPixel),
+            ("speech bubble click regions are fully painted", suite.speechBubbleClickRegionsAreFullyPainted),
             ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),
             ("early click during descent", suite.earlyClickDuringDescent),
             ("bounded objects over a long reminder", suite.persistentReminderHasBoundedParticles),

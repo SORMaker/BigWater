@@ -23,10 +23,11 @@ enum OverlayControls {
         let rowHeight = 34.0
         let gap = 8.0
         let totalHeight = isPreview ? primaryHeight : primaryHeight + gap + rowHeight
-        let center = scene.characterPosition.x
+        // Anchor to the resting point, not the swaying character, so a
+        // button never moves between a press and its release.
+        let anchor = scene.target
         let origin = clampedOrigin(size: CGSize(width: width, height: totalHeight),
-                                   desired: CGPoint(x: center - width / 2,
-                                                    y: scene.characterPosition.y + 58),
+                                   desired: CGPoint(x: anchor.x - width / 2, y: anchor.y + 58),
                                    within: visibleBounds)
         let primary = CGRect(origin: origin, size: CGSize(width: width, height: primaryHeight))
         let buttons: [OverlayButtonSpec]
@@ -78,6 +79,13 @@ enum OverlayControls {
                               frame: CGRect(x: primary.minX + smallWidth + gap, y: primary.maxY + 8,
                                             width: smallWidth, height: 32))
         ])
+    }
+
+    /// The card's fully painted body, matching `drawCompactCard` minus its
+    /// stepped corners and offset shadow.
+    static func compactCardRegions(_ card: CGRect) -> [CGRect] {
+        [CGRect(x: card.minX, y: card.minY + 4, width: card.width, height: card.height - 8),
+         CGRect(x: card.minX + 4, y: card.minY, width: card.width - 8, height: card.height)]
     }
 
     static func drawCompactCard(_ frame: CGRect, in context: CGContext,

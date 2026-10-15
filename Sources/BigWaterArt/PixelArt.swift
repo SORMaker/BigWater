@@ -456,8 +456,8 @@ public enum SceneRenderer {
         context.setShouldAntialias(false)
         let point = scene.characterPosition
         PixelArt.rope(in: context, x: point.x - 48, from: scene.topInset, to: point.y + 43)
-        if scene.phase == .reminding || scene.phase == .acknowledging {
-            PixelArt.speech(in: context, at: CGPoint(x: max(12, point.x - 255), y: point.y - 36),
+        if let origin = speechOrigin(for: scene) {
+            PixelArt.speech(in: context, at: origin,
                             acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme)
         }
         if scene.appearance.character == .claude {
@@ -483,5 +483,48 @@ public enum SceneRenderer {
                           WaterPalette.blueLight.withAlphaComponent(opacity))
         }
         context.restoreGState()
+    }
+
+    /// Where the speech bubble is drawn, or nil while it is hidden.
+    public static func speechOrigin(for scene: ReminderScene) -> CGPoint? {
+        guard scene.phase == .reminding || scene.phase == .acknowledging else { return nil }
+        let point = scene.characterPosition
+        let origin = CGPoint(x: max(12, point.x - 255), y: point.y - 36)
+        return CGPoint(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
+    }
+
+    /// The bubble body's fully painted rectangles (excluding the small tail),
+    /// in the same top-left view space as `draw`.
+    public static func speechRegions(for scene: ReminderScene) -> [CGRect] {
+        guard let origin = speechOrigin(for: scene) else { return [] }
+        return [CGRect(x: origin.x + 6, y: origin.y, width: 168, height: 64),
+                CGRect(x: origin.x, y: origin.y + 6, width: 180, height: 52)]
+    }
+
+    /// Conservative rectangles covering everything `draw` paints for this
+    /// frame, one per element, so a full-screen canvas only redraws these.
+    public static func paintedRegions(of scene: ReminderScene) -> [CGRect] {
+        guard scene.phase != .finished else { return [] }
+        let point = scene.characterPosition
+        // Rope, then the sprite (±64 plus grid snapping and the droplet's bob)
+        // with its carried bottle and release streaks.
+        var regions = [
+            CGRect(x: point.x - 56, y: scene.topInset, width: 16, height: max(0, point.y + 45 - scene.topInset)),
+            CGRect(x: point.x - 68, y: point.y - 78, width: 170, height: 150)
+        ]
+        if let origin = speechOrigin(for: scene) {
+            regions.append(CGRect(x: origin.x, y: origin.y, width: 192, height: 64))
+        }
+        for bottle in scene.bottles {
+            // Half the diagonal of the 18×32 bottle covers any rotation.
+            let radius = 18.4 * (bottle.scale * 2).rounded() / 2 + 2
+            regions.append(CGRect(x: bottle.position.x - radius, y: bottle.position.y - radius,
+                                  width: radius * 2, height: radius * 2))
+        }
+        for particle in scene.particles {
+            regions.append(CGRect(x: particle.position.x - 2, y: particle.position.y - 2,
+                                  width: particle.size + 4, height: particle.size + 4))
+        }
+        return regions.map { $0.insetBy(dx: -4, dy: -4).integral }
     }
 }

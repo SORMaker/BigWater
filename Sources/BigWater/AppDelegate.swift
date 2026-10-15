@@ -8,6 +8,7 @@ import BigWaterArt
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private static let loginPreferenceKey = "launchAtLogin"
+    static let presentationRetryDelay: TimeInterval = 30
     private let logger = Logger(subsystem: "com.oil.bigwater", category: "reminders")
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
@@ -75,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.isPreviewing = false
             self?.updateSettings()
         }
+        overlay.onFinished = { [weak self] in self?.checkReminder() }
 
         popover.behavior = .transient
         popover.animates = false
@@ -245,7 +247,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         reminderTimer = nil
         updateSettings()
         if let due = schedule.nextCheckAt {
-            let timer = Timer(timeInterval: max(due.timeIntervalSince(dateNow()), 0.1), repeats: false) { [weak self] _ in
+            // Still due here means the overlay could not be shown (no usable
+            // screen, or an exit animation still running). Retry slowly; screen
+            // changes and the overlay finishing also trigger a check.
+            let delay = schedule.isDue ? Self.presentationRetryDelay : max(due.timeIntervalSince(dateNow()), 0.1)
+            let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkReminder() }
             }
             RunLoop.main.add(timer, forMode: .common)

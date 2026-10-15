@@ -1,5 +1,6 @@
 import AppKit
 import BigWaterCore
+import BigWaterArt
 
 /// Compiled together with the production AppDelegate by Tools/check-session.sh.
 /// Notifications stay inside this process; the Mac never actually sleeps.
@@ -292,6 +293,70 @@ private final class SessionChecks {
         try expect(backups.values.contains { $0 as? Data == unreadable },
                    "Unreadable saved state was overwritten without a backup")
         print("PASS: unreadable saved state is backed up before the first save")
+
+        // A due reminder that cannot be shown yet: the previous exit animation
+        // is still on screen. These steps run the real overlay timers.
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        let overlaySuite = suiteName + ".overlay"
+        let overlayPreferences = UserDefaults(suiteName: overlaySuite)!
+        overlayPreferences.set(true, forKey: "launchAtLogin")
+        defer { overlayPreferences.removePersistentDomain(forName: overlaySuite) }
+        move(to: 23, 9)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: overlayPreferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        move(to: 23, 11)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment, "Overlay fixture did not start")
+        overlay.acknowledge()
+        move(to: 23, 13, 1)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(schedule.isDue && overlay.isActive, "Fixture did not overlap a due reminder with the exit animation")
+        let retry = property("reminderTimer", as: Timer?.self)?.fireDate.timeIntervalSinceNow ?? 0
+        try expect(retry > AppDelegate.presentationRetryDelay - 2,
+                   "A reminder that could not be shown retried in a tight loop")
+        print("PASS: a due reminder that cannot be shown retries slowly")
+
+        spin(ReminderScene.acknowledgmentDuration + ReminderScene.ascentDuration + 0.5)
+        try expect(overlay.isAwaitingAcknowledgment, "The next reminder waited for the retry, not the exit animation")
+        print("PASS: the next reminder appears as soon as the exit animation ends")
+
+        spin(ReminderScene.descentDuration + 0.3)
+        let buttonFrames = { self.overlayField("buttonPanels", as: [NSWindow].self).map(\.frame) }
+        let shownBlockers = { self.overlayField("blockerPanels", as: [NSWindow].self).filter(\.isVisible) }
+        let firstFrames = buttonFrames()
+        try expect(firstFrames.count == 3 && shownBlockers().count == 2, "Reminder controls or bubble blockers are missing")
+        spin(ReminderScene.throwPeriod)
+        try expect(buttonFrames() == firstFrames, "Reminder buttons moved while shown")
+        print("PASS: animated buttons hold still and the speech bubble catches clicks")
+
+        property("settings", as: SettingsModel.self).change { $0.style = .compact }
+        overlay.snooze(minutes: 10)
+        move(to: 23, 13, 11)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment && shownBlockers().count == 2, "The compact card lets clicks through")
+        let layout = OverlayControls.compactLayout(visibleBounds: CGRect(x: 0, y: 24, width: 900, height: 540), isPreview: false)
+        let card = PixelArt.image(size: CGSize(width: 900, height: 600), backingScale: 1) {
+            OverlayControls.drawCompactCard(layout.card, in: $0, appearance: ReminderAppearance(), isPreview: false)
+        }.representations.first as! NSBitmapImageRep
+        for region in OverlayControls.compactCardRegions(layout.card) {
+            for y in stride(from: Int(region.minY), to: Int(region.maxY), by: 3) {
+                for x in stride(from: Int(region.minX), to: Int(region.maxX), by: 3) {
+                    try expect(card.bitmapData![y * card.bytesPerRow + x * 4 + 3] == 255,
+                               "Card blocker region is not painted at (\(x), \(y))")
+                }
+            }
+        }
+        overlay.stop()
+        print("PASS: the compact card catches clicks under fully painted pixels")
+    }
+
+    private func overlayField<T>(_ label: String, as type: T.Type) -> T {
+        Mirror(reflecting: overlay).children.first { $0.label == label }!.value as! T
+    }
+
+    /// Lets the overlay's real animation timers run.
+    private func spin(_ seconds: TimeInterval) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 }
 
@@ -301,7 +366,7 @@ private enum BigWaterSessionChecks {
         _ = NSApplication.shared
         do {
             try MainActor.assumeIsolated { try SessionChecks().run() }
-            print("18/18 session checks passed")
+            print("22/22 session checks passed")
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             exit(1)
