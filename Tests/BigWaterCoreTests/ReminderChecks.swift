@@ -12,32 +12,120 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String,
 }
 
 struct ReminderChecks {
-    private let now = Date(timeIntervalSince1970: 10_000)
+    private var calendar: Calendar {
+        var result = Calendar(identifier: .gregorian)
+        result.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return result
+    }
 
-    func twoHourDefaultAndWakeOverdue() throws {
-        let schedule = ReminderSchedule(now: now)
-        try expect(!schedule.isDue(at: now.addingTimeInterval(7_199)), "Reminder fired early")
-        try expect(schedule.isDue(at: now.addingTimeInterval(7_200)), "Default is not two hours")
-        try expect(schedule.isDue(at: now.addingTimeInterval(86_400)), "Overdue reminder lost after sleep")
+    private func date(_ day: Int = 15, _ hour: Int = 9, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 10, day: day, hour: hour, minute: minute))!
+    }
+
+    private var now: Date { date() }
+
+    func twoHourDefault() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.update(at: now.addingTimeInterval(7_199), uptime: 7_199, calendar: calendar)
+        try expect(!schedule.isDue, "Reminder fired early")
+        schedule.update(at: now.addingTimeInterval(7_200), uptime: 7_200, calendar: calendar)
+        try expect(schedule.isDue, "Default is not two hours")
+    }
+
+    func sleepPreservesRemainingTime() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 9, 45), uptime: 2_700, isSessionActive: false, calendar: calendar)
+        try expect(schedule.remainingTime == 4_500, "Sleep did not save the remaining 75 minutes")
+        try expect(schedule.nextReminderAt == nil && schedule.nextCheckAt == nil, "Sleep left an armed countdown")
+        schedule.update(at: date(15, 10), uptime: 3_600, isSessionActive: false, calendar: calendar)
+        schedule.update(at: date(15, 14), uptime: 18_000, isSessionActive: true, calendar: calendar)
+        schedule.update(at: date(15, 14), uptime: 18_000, isSessionActive: true, calendar: calendar)
+        try expect(!schedule.isDue && schedule.remainingTime == 4_500, "Sleep or duplicate notifications consumed time")
+        try expect(schedule.nextReminderAt == date(15, 15, 15), "Wake did not resume the saved countdown")
+        schedule.update(at: date(15, 15, 15), uptime: 22_500, calendar: calendar)
+        try expect(schedule.isDue, "Resumed countdown never became due")
+    }
+
+    func overnightStartsAtFirstMorningUse() throws {
+        var schedule = ReminderSchedule(now: date(15, 21), uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 21, 30), uptime: 1_800, isSessionActive: false, calendar: calendar)
+        schedule.update(at: date(16, 5), uptime: 28_800, isSessionActive: true, calendar: calendar)
+        try expect(!schedule.isCounting && schedule.nextCheckAt == date(16, 6), "Counted before 06:00")
+        schedule.update(at: date(16, 5, 10), uptime: 29_400, isSessionActive: false, calendar: calendar)
+        schedule.update(at: date(16, 8, 15), uptime: 40_500, isSessionActive: true, calendar: calendar)
+        try expect(schedule.remainingTime == 7_200, "Morning inherited yesterday's partial interval")
+        try expect(schedule.nextReminderAt == date(16, 10, 15), "Counted from 06:00 while the computer slept")
+    }
+
+    func dailyBoundariesAndOutstandingReminder() throws {
+        var schedule = ReminderSchedule(now: date(15, 5, 59), uptime: 0, calendar: calendar)
+        try expect(!schedule.isCounting && schedule.nextCheckAt == date(15, 6), "Early launch ignored morning boundary")
+        schedule.update(at: date(15, 6), uptime: 60, calendar: calendar)
+        try expect(schedule.nextReminderAt == date(15, 8), "06:00 did not start a full interval")
+        schedule.update(at: date(15, 8), uptime: 7_260, calendar: calendar)
+        schedule.reminderDidStart()
+        try expect(schedule.isAwaitingAcknowledgment, "Due reminder did not become outstanding")
+        try expect(schedule.nextCheckAt == date(15, 22), "Outstanding reminder lost its 22:00 stop timer")
+        schedule.update(at: date(15, 22), uptime: 57_660, calendar: calendar)
+        try expect(!schedule.isAwaitingAcknowledgment && !schedule.isDue, "22:00 kept a reminder outstanding")
+        try expect(schedule.nextReminderAt == nil && schedule.nextCheckAt == date(16, 6), "Night scheduled a reminder")
+        schedule.reminderDidStart()
+        try expect(!schedule.isAwaitingAcknowledgment, "Preview bypassed quiet hours")
+    }
+
+    func cutoffWinsOverSimultaneousDeadline() throws {
+        var schedule = ReminderSchedule(hours: 0.5, now: date(15, 21, 30), uptime: 0, calendar: calendar)
+        try expect(schedule.nextReminderAt == nil && schedule.nextCheckAt == date(15, 22), "A reminder was scheduled at 22:00")
+        schedule.update(at: date(15, 23), uptime: 5_400, calendar: calendar)
+        try expect(!schedule.isDue && !schedule.isCounting, "Delayed callback fired after 22:00")
+        try expect(schedule.remainingTime == 0, "Delayed callback did not stop counting at the cutoff")
+        schedule.update(at: date(16, 7), uptime: 34_200, calendar: calendar)
+        try expect(schedule.nextReminderAt == date(16, 7, 30), "Yesterday's overdue reminder leaked into morning")
+    }
+
+    func clockAndTimeZoneChanges() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 8), uptime: 600, calendar: calendar)
+        try expect(schedule.remainingTime == 6_600, "Backward clock change altered elapsed use")
+        schedule.update(at: date(15, 14), uptime: 1_200, calendar: calendar)
+        try expect(schedule.remainingTime == 6_000 && !schedule.isDue, "Forward clock change consumed extra hours")
+        var tokyo = calendar
+        tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        schedule = ReminderSchedule(now: date(15, 21, 30), uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 21, 30), uptime: 0, calendar: tokyo)
+        try expect(!schedule.isCounting && schedule.nextReminderAt == nil, "Time zone change ignored the new local cutoff")
+    }
+
+    func dstAndInactiveStartup() throws {
+        var newYork = calendar
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+        let morning = newYork.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 8))!
+        var schedule = ReminderSchedule(now: morning, uptime: 0, isSessionActive: false, calendar: newYork)
+        schedule.update(at: morning.addingTimeInterval(3_600), uptime: 3_600, calendar: newYork)
+        try expect(schedule.remainingTime == 7_200 && schedule.nextCheckAt == nil, "Dark login launch counted screen-off time")
+        schedule.update(at: morning.addingTimeInterval(3_600), uptime: 3_600, isSessionActive: true, calendar: newYork)
+        try expect(schedule.nextReminderAt == morning.addingTimeInterval(10_800), "DST morning did not use the first screen wake")
+        let cutoff = newYork.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 22))!
+        try expect(schedule.nextBoundaryAt == cutoff, "DST cutoff used a fixed UTC offset")
     }
 
     func nextIntervalStartsAtClickAndDoesNotQueue() throws {
-        var schedule = ReminderSchedule(now: now)
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
         schedule.reminderDidStart()
         try expect(schedule.nextReminderAt == nil, "Outstanding reminder left another deadline")
-        try expect(!schedule.isDue(at: now.addingTimeInterval(86_400)), "Outstanding reminder queued another")
-        schedule.acknowledge(at: now.addingTimeInterval(10_000))
+        try expect(!schedule.isDue, "Outstanding reminder queued another")
+        schedule.acknowledge(at: now.addingTimeInterval(10_000), uptime: 10_000, calendar: calendar)
         try expect(schedule.nextReminderAt == now.addingTimeInterval(17_200), "Interval did not start at click")
-        schedule.acknowledge(at: now.addingTimeInterval(20_000))
+        schedule.acknowledge(at: now.addingTimeInterval(11_000), uptime: 11_000, calendar: calendar)
         try expect(schedule.nextReminderAt == now.addingTimeInterval(17_200), "Duplicate click postponed reminder")
     }
 
     func intervalChangeDuringReminderWaitsForClick() throws {
-        var schedule = ReminderSchedule(now: now)
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
         schedule.reminderDidStart()
-        schedule.setInterval(hours: 3.5, now: now.addingTimeInterval(100))
+        schedule.setInterval(hours: 3.5, now: now.addingTimeInterval(100), uptime: 100, calendar: calendar)
         try expect(schedule.nextReminderAt == nil, "Changing interval scheduled over an active reminder")
-        schedule.acknowledge(at: now.addingTimeInterval(500))
+        schedule.acknowledge(at: now.addingTimeInterval(500), uptime: 500, calendar: calendar)
         try expect(schedule.nextReminderAt == now.addingTimeInterval(13_100), "New interval was not applied at click")
     }
 
@@ -46,9 +134,14 @@ struct ReminderChecks {
         try expect(ReminderSchedule.validated(.infinity) == 2, "Infinite preference was accepted")
         try expect(ReminderSchedule.validated(-10) == 0.5, "Minimum interval is not enforced")
         try expect(ReminderSchedule.validated(30) == 24, "Maximum interval is not enforced")
-        var schedule = ReminderSchedule(now: now)
-        schedule.setInterval(hours: 1, now: now.addingTimeInterval(400))
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.setInterval(hours: 1, now: now.addingTimeInterval(400), uptime: 400, calendar: calendar)
         try expect(schedule.nextReminderAt == now.addingTimeInterval(4_000), "Idle interval change did not reset deadline")
+        schedule.update(at: now.addingTimeInterval(500), uptime: 500, isSessionActive: false, calendar: calendar)
+        schedule.setInterval(hours: 0.5, now: now.addingTimeInterval(600), uptime: 600, calendar: calendar)
+        try expect(schedule.nextReminderAt == nil && schedule.remainingTime == 1_800, "Setting interval restarted a sleeping countdown")
+        schedule.update(at: now.addingTimeInterval(1_000), uptime: 1_000, isSessionActive: true, calendar: calendar)
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(2_800), "Sleeping interval edit did not apply at wake")
     }
 
     func slideThrowClickAndClimb() throws {
@@ -114,7 +207,13 @@ enum BigWaterChecks {
     static func main() {
         let suite = ReminderChecks()
         let checks: [(String, () throws -> Void)] = [
-            ("two-hour default and overdue wake", suite.twoHourDefaultAndWakeOverdue),
+            ("two-hour default", suite.twoHourDefault),
+            ("sleep and duplicate notifications preserve remaining time", suite.sleepPreservesRemainingTime),
+            ("overnight reset starts at first morning use", suite.overnightStartsAtFirstMorningUse),
+            ("06:00 start and 22:00 dismiss outstanding reminders", suite.dailyBoundariesAndOutstandingReminder),
+            ("22:00 cutoff wins over simultaneous and late deadlines", suite.cutoffWinsOverSimultaneousDeadline),
+            ("clock and local time zone changes", suite.clockAndTimeZoneChanges),
+            ("DST and screen-off login startup", suite.dstAndInactiveStartup),
             ("click resets interval without queued reminders", suite.nextIntervalStartsAtClickAndDoesNotQueue),
             ("interval changes during reminders", suite.intervalChangeDuringReminderWaitsForClick),
             ("invalid preferences and idle interval changes", suite.invalidPreferencesAndIntervalChange),

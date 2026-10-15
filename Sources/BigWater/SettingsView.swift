@@ -7,8 +7,13 @@ final class SettingsModel: ObservableObject {
     @Published var hours: Double {
         didSet { onIntervalChange?(hours) }
     }
-    @Published var nextReminderAt: Date?
+    @Published var scheduleText = ""
+    @Published var launchAtLogin = false
+    @Published var loginNeedsApproval = false
+    @Published var loginStatusText: String?
     var onIntervalChange: ((Double) -> Void)?
+    var onLaunchAtLoginChange: ((Bool) -> Void)?
+    var onOpenLoginSettings: (() -> Void)?
     var onQuit: (() -> Void)?
 
     init(hours: Double) { self.hours = ReminderSchedule.validated(hours) }
@@ -70,17 +75,37 @@ struct SettingsView: View {
                 .overlay(Rectangle().stroke(ink.opacity(0.13), lineWidth: 1))
             }
 
-            Group {
-                if let next = model.nextReminderAt {
-                    Text("下次提醒  \(next.formatted(date: .omitted, time: .shortened))")
-                } else {
-                    Text("点一下 Claude，开始下次计时")
-                }
-            }
+            Text(model.scheduleText)
             .font(.system(size: 11))
             .foregroundStyle(ink.opacity(0.5))
             .padding(.top, 14)
-            .padding(.bottom, 20)
+            .padding(.bottom, 14)
+
+            Text("本地时间 06:00–22:00 · 休眠暂停计时")
+                .font(.system(size: 11))
+                .foregroundStyle(ink.opacity(0.5))
+                .padding(.bottom, 16)
+
+            Toggle("登录时启动", isOn: Binding(
+                get: { model.launchAtLogin },
+                set: { model.onLaunchAtLoginChange?($0) }
+            ))
+            .toggleStyle(.switch)
+            .font(.system(size: 12))
+            .foregroundStyle(ink)
+            .padding(.bottom, 16)
+
+            if let status = model.loginStatusText {
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundStyle(ink.opacity(0.6))
+                    .padding(.bottom, 12)
+                if model.loginNeedsApproval {
+                    Button("打开系统登录项") { model.onOpenLoginSettings?() }
+                        .font(.system(size: 11))
+                        .padding(.bottom, 12)
+                }
+            }
 
             Rectangle().fill(ink.opacity(0.12)).frame(height: 1)
             Button { model.onQuit?() } label: {

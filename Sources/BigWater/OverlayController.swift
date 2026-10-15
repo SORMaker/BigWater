@@ -16,6 +16,7 @@ final class OverlayController {
     private var isSuspended = false
 
     var isActive: Bool { scene != nil }
+    var isAwaitingAcknowledgment: Bool { scene?.isInteractive == true }
 
     @discardableResult
     func start() -> Bool {

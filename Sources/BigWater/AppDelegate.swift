@@ -1,16 +1,19 @@
 import AppKit
 import SwiftUI
 import OSLog
+import ServiceManagement
 import BigWaterCore
 import BigWaterArt
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let preferenceKey = "reminderIntervalHours"
+    private static let loginPreferenceKey = "launchAtLogin"
     private let logger = Logger(subsystem: "com.oil.bigwater", category: "reminders")
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private let overlay = OverlayController()
+    private var overlayDay: DateComponents?
     private var schedule = ReminderSchedule()
     private var settings: SettingsModel!
     private var reminderTimer: Timer?
@@ -18,8 +21,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isSleeping = false
     private var isSessionActive = true
     private var isScreenAwake = true
+    private let dateNow: () -> Date
+    private let uptimeNow: () -> TimeInterval
+    private let preferences: UserDefaults
 
     private var canPresentReminder: Bool { !isSleeping && isSessionActive && isScreenAwake }
+
+    init(dateNow: @escaping () -> Date = Date.init,
+         uptimeNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         preferences: UserDefaults = .standard) {
+        self.dateNow = dateNow
+        self.uptimeNow = uptimeNow
+        self.preferences = preferences
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -30,10 +45,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let stored = UserDefaults.standard.object(forKey: Self.preferenceKey) as? Double
-        schedule = ReminderSchedule(hours: stored ?? ReminderSchedule.defaultHours)
+        let stored = preferences.object(forKey: Self.preferenceKey) as? Double
+        // Login launches can happen before the display or user session wakes.
+        isSessionActive = (CGSessionCopyCurrentDictionary() as? [String: Any])?[kCGSessionOnConsoleKey as String] as? Bool ?? true
+        isScreenAwake = NSScreen.screens.contains {
+            guard let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
+            return CGDisplayIsAsleep(number.uint32Value) == 0
+        }
+        schedule = ReminderSchedule(hours: stored ?? ReminderSchedule.defaultHours,
+                                    now: dateNow(), uptime: uptimeNow(),
+                                    isSessionActive: canPresentReminder)
         settings = SettingsModel(hours: schedule.intervalHours)
         settings.onIntervalChange = { [weak self] hours in self?.changeInterval(to: hours) }
+        settings.onLaunchAtLoginChange = { [weak self] enabled in self?.changeLaunchAtLogin(to: enabled) }
+        settings.onOpenLoginSettings = { SMAppService.openSystemSettingsLoginItems() }
         settings.onQuit = { NSApp.terminate(nil) }
         overlay.onAcknowledge = { [weak self] in self?.acknowledged() }
 
@@ -53,7 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem = item
         observeSessionChanges()
-        armReminderTimer()
+        configureLoginItem()
+        checkReminder()
 
         // Developer preview uses exactly the production reminder, including
         // the real click handler. It never changes the saved interval.
@@ -80,47 +106,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            checkReminder()
+            refreshLoginStatus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
 
     private func changeInterval(to hours: Double) {
-        schedule.setInterval(hours: hours, now: Date())
-        UserDefaults.standard.set(schedule.intervalHours, forKey: Self.preferenceKey)
-        armReminderTimer()
+        schedule.setInterval(hours: hours, now: dateNow(), uptime: uptimeNow())
+        preferences.set(schedule.intervalHours, forKey: Self.preferenceKey)
+        checkReminder()
     }
 
     private func acknowledged() {
-        schedule.acknowledge(at: Date())
+        schedule.acknowledge(at: dateNow(), uptime: uptimeNow())
         logger.info("Claude clicked; next reminder scheduled")
-        armReminderTimer()
+        checkReminder()
     }
 
     private func presentReminder() {
-        guard canPresentReminder, !overlay.isActive, overlay.start() else { return }
+        schedule.update(at: dateNow(), uptime: uptimeNow(), isSessionActive: canPresentReminder)
+        guard canPresentReminder, schedule.isWithinReminderHours,
+              !schedule.isAwaitingAcknowledgment, !overlay.isActive, overlay.start() else { return }
         popover.performClose(nil)
+        overlayDay = schedule.localDay
         schedule.reminderDidStart()
-        reminderTimer?.invalidate()
-        reminderTimer = nil
-        settings.nextReminderAt = nil
+        armReminderTimer()
         logger.info("Reminder started")
     }
 
     private func checkReminder() {
-        if schedule.isDue(at: Date()) { presentReminder() }
+        schedule.update(at: dateNow(), uptime: uptimeNow(), isSessionActive: canPresentReminder)
+        // Retire every old-day scene, including a paused exit animation.
+        // Same-day exit animations can still resume after a short sleep.
+        if !schedule.isWithinReminderHours || (overlay.isActive && overlayDay != schedule.localDay) {
+            overlay.stop()
+        }
+        if schedule.isWithinReminderHours && canPresentReminder {
+            overlay.resume()
+            if schedule.isDue { presentReminder() }
+        } else if !canPresentReminder {
+            overlay.suspend()
+        }
         armReminderTimer()
     }
 
     private func armReminderTimer() {
         reminderTimer?.invalidate()
         reminderTimer = nil
-        settings.nextReminderAt = schedule.nextReminderAt
-        guard canPresentReminder, let due = schedule.nextReminderAt else { return }
-        let timer = Timer(timeInterval: max(due.timeIntervalSinceNow, 0.5), repeats: false) { [weak self] _ in
+        updateSettings()
+        guard let due = schedule.nextCheckAt else { return }
+        let timer = Timer(timeInterval: max(due.timeIntervalSince(dateNow()), 0.5), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkReminder() }
         }
-        timer.tolerance = 5
         RunLoop.main.add(timer, forMode: .common)
         reminderTimer = timer
     }
@@ -153,22 +192,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         observe(.default, NSApplication.didChangeScreenParametersNotification) { [weak self] in
             self?.overlay.screenParametersChanged()
-            if self?.canPresentReminder == true { self?.overlay.resume() }
             self?.checkReminder()
         }
         observe(.default, .NSSystemClockDidChange) { [weak self] in self?.checkReminder() }
+        observe(.default, .NSSystemTimeZoneDidChange) { [weak self] in self?.checkReminder() }
+        observe(.default, .NSCalendarDayChanged) { [weak self] in self?.checkReminder() }
     }
 
     private func suspendSession() {
-        overlay.suspend()
-        reminderTimer?.invalidate()
-        reminderTimer = nil
+        checkReminder()
     }
 
     private func resumeSessionIfPossible() {
         guard canPresentReminder else { return }
-        overlay.resume()
         checkReminder()
+    }
+
+    private func updateSettings() {
+        if !schedule.isWithinReminderHours {
+            settings.scheduleText = "休息时间 · 06:00 后使用电脑再计时"
+        } else if !canPresentReminder {
+            let minutes = Int(ceil(schedule.remainingTime / 60))
+            settings.scheduleText = "已暂停 · 亮屏后继续剩余 \(minutes) 分钟"
+        } else if schedule.isAwaitingAcknowledgment {
+            settings.scheduleText = "点一下 Claude，开始下次计时"
+        } else if let next = schedule.nextReminderAt {
+            settings.scheduleText = "下次提醒  \(next.formatted(date: .omitted, time: .shortened))"
+        } else {
+            settings.scheduleText = "今天不再提醒 · 明天使用时重新计时"
+        }
+    }
+
+    private func configureLoginItem() {
+        // Respect a later change in macOS Login Items instead of re-enabling it
+        // on every launch. Only the first app launch supplies the default.
+        if preferences.object(forKey: Self.loginPreferenceKey) == nil {
+            changeLaunchAtLogin(to: true)
+        } else {
+            refreshLoginStatus()
+        }
+    }
+
+    private func changeLaunchAtLogin(to enabled: Bool) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            settings.loginStatusText = "请从 Big Water.app 设置登录启动"
+            return
+        }
+        do {
+            let service = SMAppService.mainApp
+            if enabled {
+                if service.status != .enabled && service.status != .requiresApproval { try service.register() }
+            } else if service.status != .notRegistered {
+                try service.unregister()
+            }
+            preferences.set(enabled, forKey: Self.loginPreferenceKey)
+            refreshLoginStatus()
+        } catch {
+            refreshLoginStatus()
+            settings.loginStatusText = "设置未成功，请在系统登录项中检查"
+            logger.error("Login item change failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func refreshLoginStatus() {
+        let status = SMAppService.mainApp.status
+        settings.launchAtLogin = status == .enabled || status == .requiresApproval
+        settings.loginNeedsApproval = status == .requiresApproval
+        settings.loginStatusText = status == .requiresApproval ? "请在系统登录项中允许 Big Water" : nil
     }
 
     private func observe(_ center: NotificationCenter, _ name: Notification.Name,
