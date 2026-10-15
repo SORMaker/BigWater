@@ -238,7 +238,7 @@
 
 - **位置**：[SettingsView.swift:110-115](Sources/BigWater/SettingsView.swift#L110)
 - **原因**：内容宽度写死为 312pt。展开分组使内容超出弹窗高度后，系统显示 15pt 宽的滚动条，可见宽度变为 341pt，而 356pt 宽（含边距）的内容被居中放置，左右各偏约 7.5pt。用户截图中卡片距左边约 14pt、距右边约 29pt，与此吻合。
-- **修复**（分支 `fix-m5-low-items`）：内容改为跟随可见宽度（`maxWidth: .infinity`）。离屏渲染无法强制显示传统滚动条，**需在实机上确认**。
+- **修复**（分支 `fix-m5-low-items`）：内容改为跟随可见宽度（`maxWidth: .infinity`）。用户已在重新构建的 App 中确认，展开分组后不再偏移。
 
 ## 做得好的地方
 
