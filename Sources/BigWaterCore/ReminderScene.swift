@@ -35,6 +35,7 @@ public struct ReminderScene {
     public private(set) var viewport: CGSize
     public private(set) var topInset: Double
     public private(set) var phase: ReminderPhase = .descending
+    public let appearance: ReminderAppearance
     public private(set) var phaseTime = 0.0
     public private(set) var time = 0.0
     public private(set) var bottles: [FlyingBottle] = []
@@ -43,9 +44,11 @@ public struct ReminderScene {
     public var isHovered = false
     private var retirementStart = CGPoint.zero
 
-    public init(viewport: CGSize, topInset: Double = 24) {
+    public init(viewport: CGSize, topInset: Double = 24,
+                appearance: ReminderAppearance = .init()) {
         self.viewport = viewport
         self.topInset = topInset
+        self.appearance = appearance
     }
 
     public var target: CGPoint {
@@ -165,6 +168,7 @@ public struct ReminderScene {
     }
 
     private mutating func throwBottle() {
+        guard appearance.character == .claude else { return }
         let variation = throwCount % 4
         let velocities = [-245.0, 90.0, -145.0, 155.0]
         let spins = [-2.8, 2.1, -1.6, 2.9]

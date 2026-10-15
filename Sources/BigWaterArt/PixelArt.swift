@@ -13,6 +13,20 @@ public enum WaterPalette {
     public static let glint = NSColor(srgbRed: 0.86, green: 0.97, blue: 1, alpha: 1)
     public static let rope = NSColor(srgbRed: 0.48, green: 0.37, blue: 0.27, alpha: 1)
     public static let ropeLight = NSColor(srgbRed: 0.79, green: 0.65, blue: 0.46, alpha: 1)
+
+    public static func accents(for theme: ReminderTheme) -> (base: NSColor, light: NSColor, dark: NSColor) {
+        switch theme {
+        case .blue: return (blue, blueLight, blueDark)
+        case .mint:
+            return (NSColor(srgbRed: 0.25, green: 0.67, blue: 0.57, alpha: 1),
+                    NSColor(srgbRed: 0.62, green: 0.91, blue: 0.77, alpha: 1),
+                    NSColor(srgbRed: 0.12, green: 0.43, blue: 0.37, alpha: 1))
+        case .peach:
+            return (NSColor(srgbRed: 0.94, green: 0.55, blue: 0.39, alpha: 1),
+                    NSColor(srgbRed: 1.0, green: 0.77, blue: 0.59, alpha: 1),
+                    NSColor(srgbRed: 0.66, green: 0.30, blue: 0.23, alpha: 1))
+        }
+    }
 }
 
 /// Deliberately painted on a fixed pixel grid: no filtered textures or fuzzy
@@ -25,7 +39,8 @@ public enum PixelArt {
     }
 
     public static func bottle(in context: CGContext, at point: CGPoint,
-                              scale: Double, angle: Double = 0, opacity: Double = 1) {
+                              scale: Double, angle: Double = 0, opacity: Double = 1,
+                              theme: ReminderTheme = .blue) {
         context.saveGState()
         context.setShouldAntialias(false)
         context.setAlpha(opacity)
@@ -33,44 +48,46 @@ public enum PixelArt {
         context.rotate(by: (angle / (.pi / 12)).rounded() * (.pi / 12))
         context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -9, y: -16)
+        let accent = WaterPalette.accents(for: theme)
 
         // Screw cap and narrow neck.
-        rect(context, 6, 0, 6, 3, WaterPalette.blueDark)
-        rect(context, 7, 0, 4, 1, WaterPalette.blue)
-        rect(context, 7, 1, 1, 2, WaterPalette.blueLight)
+        rect(context, 6, 0, 6, 3, accent.dark)
+        rect(context, 7, 0, 4, 1, accent.base)
+        rect(context, 7, 1, 1, 2, accent.light)
         rect(context, 6, 3, 6, 3, WaterPalette.glint)
-        rect(context, 10, 3, 2, 3, WaterPalette.blue)
+        rect(context, 10, 3, 2, 3, accent.base)
 
         // Stepped shoulders, transparent plastic and blue water.
-        rect(context, 5, 5, 8, 2, WaterPalette.blueDark)
-        rect(context, 4, 7, 10, 2, WaterPalette.blueDark)
-        rect(context, 3, 9, 12, 20, WaterPalette.blueDark)
-        rect(context, 4, 29, 10, 2, WaterPalette.blueDark)
+        rect(context, 5, 5, 8, 2, accent.dark)
+        rect(context, 4, 7, 10, 2, accent.dark)
+        rect(context, 3, 9, 12, 20, accent.dark)
+        rect(context, 4, 29, 10, 2, accent.dark)
         rect(context, 6, 5, 6, 2, WaterPalette.glint)
         rect(context, 5, 7, 8, 2, WaterPalette.glint)
-        rect(context, 4, 9, 10, 19, WaterPalette.blueLight)
+        rect(context, 4, 9, 10, 19, accent.light)
         rect(context, 5, 10, 2, 17, WaterPalette.glint)
-        rect(context, 11, 9, 3, 19, WaterPalette.blue)
-        rect(context, 4, 12, 10, 1, WaterPalette.blue)
-        rect(context, 4, 25, 10, 1, WaterPalette.blue)
-        rect(context, 5, 28, 8, 2, WaterPalette.blue)
-        rect(context, 6, 29, 5, 1, WaterPalette.blueLight)
+        rect(context, 11, 9, 3, 19, accent.base)
+        rect(context, 4, 12, 10, 1, accent.base)
+        rect(context, 4, 25, 10, 1, accent.base)
+        rect(context, 5, 28, 8, 2, accent.base)
+        rect(context, 6, 29, 5, 1, accent.light)
 
         // A real label rather than a plain blue rectangle.
         rect(context, 4, 15, 10, 8, WaterPalette.cream)
         rect(context, 12, 15, 2, 8, NSColor(srgbRed: 0.82, green: 0.87, blue: 0.86, alpha: 1))
-        microText("H2O", in: context, at: CGPoint(x: 4, y: 17), color: WaterPalette.blueDark)
+        microText("H2O", in: context, at: CGPoint(x: 4, y: 17), color: accent.dark)
         context.restoreGState()
     }
 
     public static func claude(in context: CGContext, at point: CGPoint,
-                              phase: ReminderPhase, poseTime: Double, hovered: Bool = false) {
+                              phase: ReminderPhase, poseTime: Double, hovered: Bool = false,
+                              theme: ReminderTheme = .blue) {
         context.saveGState()
         context.setShouldAntialias(false)
         context.translateBy(x: (point.x / 4).rounded() * 4 - 64,
                             y: (point.y / 4).rounded() * 4 - 64)
         context.scaleBy(x: 4, y: 4)
-        for block in claudeBlocks(phase: phase, poseTime: poseTime, hovered: hovered) {
+        for block in claudeBlocks(phase: phase, poseTime: poseTime, hovered: hovered, theme: theme) {
             rect(context, block.frame.minX, block.frame.minY, block.frame.width, block.frame.height, block.color)
         }
         let cycle = poseTime.truncatingRemainder(dividingBy: ReminderScene.throwPeriod)
@@ -79,13 +96,13 @@ public enum PixelArt {
         if phase == .reminding && cycle >= 0.18 && cycle < ReminderScene.releaseTime {
             let lift = min((cycle - 0.18) / 0.25, 1)
             bottle(in: context, at: CGPoint(x: point.x + 55, y: point.y - 30 - lift * 13),
-                   scale: 1.5, angle: -0.25 - lift * 0.4)
+                   scale: 1.5, angle: -0.25 - lift * 0.4, theme: theme)
         }
         if phase == .reminding && cycle >= ReminderScene.releaseTime && cycle < 0.72 {
             // Three short pixel streaks make the moment of release readable.
             for index in 0..<3 {
                 rect(context, point.x + 75 + Double(index) * 9,
-                     point.y + 8 + Double(index) * 7, 6, 3, WaterPalette.blueLight)
+                     point.y + 8 + Double(index) * 7, 6, 3, WaterPalette.accents(for: theme).light)
             }
         }
     }
@@ -95,12 +112,14 @@ public enum PixelArt {
         let color: NSColor
     }
 
-    private static func claudeBlocks(phase: ReminderPhase, poseTime: Double, hovered: Bool) -> [PixelBlock] {
+    private static func claudeBlocks(phase: ReminderPhase, poseTime: Double, hovered: Bool,
+                                    theme: ReminderTheme = .blue) -> [PixelBlock] {
         var blocks: [PixelBlock] = []
         func paint(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: NSColor) {
             blocks.append(PixelBlock(frame: CGRect(x: x, y: y, width: width, height: height), color: color))
         }
         let clay = hovered ? WaterPalette.clayLight : WaterPalette.clay
+        let accent = WaterPalette.accents(for: theme)
         let climbing = phase == .ascending
         let happy = phase == .acknowledging || climbing
         let grip = Int(poseTime * 7) % 2
@@ -160,14 +179,14 @@ public enum PixelArt {
         }
 
         // Blue delivery cap, with a tiny water-drop badge.
-        paint(10, 5, 12, 2, WaterPalette.blueDark)
-        paint(8, 7, 16, 5, WaterPalette.blueDark)
-        paint(10, 6, 12, 2, WaterPalette.blue)
-        paint(9, 8, 14, 3, WaterPalette.blue)
-        paint(11, 6, 9, 1, WaterPalette.blueLight)
-        paint(9, 8, 2, 3, WaterPalette.blueLight)
-        paint(8, 11, 21, 2, WaterPalette.blueDark)
-        paint(9, 11, 19, 1, WaterPalette.blue)
+        paint(10, 5, 12, 2, accent.dark)
+        paint(8, 7, 16, 5, accent.dark)
+        paint(10, 6, 12, 2, accent.base)
+        paint(9, 8, 14, 3, accent.base)
+        paint(11, 6, 9, 1, accent.light)
+        paint(9, 8, 2, 3, accent.light)
+        paint(8, 11, 21, 2, accent.dark)
+        paint(9, 11, 19, 1, accent.base)
         paint(18, 8, 1, 1, WaterPalette.glint)
         paint(17, 9, 3, 2, WaterPalette.glint)
         return blocks
@@ -177,8 +196,86 @@ public enum PixelArt {
     /// carried bottles, flying bottles and transparent gaps are excluded.
     /// Coordinates are relative to Claude's center, in top-left view space.
     public static func claudeHitRegions(phase: ReminderPhase, poseTime: Double) -> [CGRect] {
+        hitRegions(for: claudeBlocks(phase: phase, poseTime: poseTime, hovered: false))
+    }
+
+    /// Clip the sprite to its canvas before creating desktop input windows.
+    /// During descent the un-clipped pixels are above this display; on a
+    /// vertically arranged second display they must not become visible there.
+    public static func claudeHitRegions(in scene: ReminderScene) -> [CGRect] {
+        let point = scene.characterPosition
+        let x = (point.x / 4).rounded() * 4
+        let y = (point.y / 4).rounded() * 4
+        let bounds = CGRect(origin: .zero, size: scene.viewport)
+        return claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime).compactMap { region in
+            let clipped = region.offsetBy(dx: x, dy: y).intersection(bounds)
+            return clipped.isNull || clipped.isEmpty ? nil : clipped
+        }
+    }
+
+    public static func droplet(in context: CGContext, at point: CGPoint,
+                               phase: ReminderPhase, poseTime: Double,
+                               hovered: Bool = false, theme: ReminderTheme = .blue) {
+        context.saveGState()
+        context.setShouldAntialias(false)
+        let bob = phase == .reminding ? (sin(poseTime * 2.8).rounded() * 4) : 0
+        context.translateBy(x: (point.x / 4).rounded() * 4 - 64,
+                            y: (point.y / 4).rounded() * 4 - 64 + bob)
+        context.scaleBy(x: 4, y: 4)
+        let accent = WaterPalette.accents(for: theme)
+        for block in dropletBlocks(accent: accent, hovered: hovered) {
+            rect(context, block.frame.minX, block.frame.minY, block.frame.width, block.frame.height, block.color)
+        }
+        context.restoreGState()
+    }
+
+    private static func dropletBlocks(accent: (base: NSColor, light: NSColor, dark: NSColor),
+                                      hovered: Bool) -> [PixelBlock] {
+        var blocks: [PixelBlock] = []
+        func paint(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: NSColor) {
+            blocks.append(PixelBlock(frame: CGRect(x: x, y: y, width: width, height: height), color: color))
+        }
+        let body = hovered ? accent.light : accent.base
+        // A pointed crown broadens into a rounded, four-bit-wide base.
+        paint(14, 3, 4, 2, accent.dark)
+        paint(12, 5, 8, 2, accent.dark)
+        paint(10, 7, 12, 2, accent.dark)
+        paint(8, 9, 16, 2, accent.dark)
+        paint(6, 11, 20, 10, accent.dark)
+        paint(7, 21, 18, 3, accent.dark)
+        paint(9, 24, 14, 2, accent.dark)
+        paint(13, 26, 6, 1, accent.dark)
+        paint(12, 5, 8, 2, body)
+        paint(10, 7, 12, 2, body)
+        paint(8, 9, 16, 2, body)
+        paint(7, 11, 18, 10, body)
+        paint(8, 21, 16, 3, body)
+        paint(10, 24, 12, 1, body)
+        paint(10, 10, 3, 10, accent.light)
+        paint(9, 11, 2, 7, WaterPalette.glint)
+        paint(23, 13, 2, 6, accent.dark)
+        paint(24, 12, 3, 3, body)
+        paint(5, 13, 2, 6, accent.dark)
+        paint(4, 12, 3, 3, body)
+        // Friendly eyes, blush pixels and a small smile distinguish it from Claude.
+        paint(12, 16, 2, 3, WaterPalette.ink)
+        paint(20, 16, 2, 3, WaterPalette.ink)
+        paint(10, 19, 2, 1, WaterPalette.clayLight)
+        paint(22, 19, 2, 1, WaterPalette.clayLight)
+        paint(16, 20, 2, 1, WaterPalette.ink)
+        paint(15, 19, 1, 1, WaterPalette.ink)
+        paint(18, 19, 1, 1, WaterPalette.ink)
+        return blocks
+    }
+
+    public static func dropletHitRegions(phase: ReminderPhase, poseTime: Double,
+                                         theme: ReminderTheme = .blue) -> [CGRect] {
+        hitRegions(for: dropletBlocks(accent: WaterPalette.accents(for: theme), hovered: false))
+    }
+
+    private static func hitRegions(for blocks: [PixelBlock]) -> [CGRect] {
         var mask = Array(repeating: Array(repeating: false, count: 32), count: 32)
-        for block in claudeBlocks(phase: phase, poseTime: poseTime, hovered: false) {
+        for block in blocks {
             for y in max(0, Int(block.frame.minY))..<min(32, Int(block.frame.maxY)) {
                 for x in max(0, Int(block.frame.minX))..<min(32, Int(block.frame.maxX)) {
                     mask[y][x] = true
@@ -211,15 +308,18 @@ public enum PixelArt {
         return regions
     }
 
-    /// Clip the sprite to its canvas before creating desktop input windows.
-    /// During descent the un-clipped pixels are above this display; on a
-    /// vertically arranged second display they must not become visible there.
-    public static func claudeHitRegions(in scene: ReminderScene) -> [CGRect] {
+    public static func characterHitRegions(in scene: ReminderScene) -> [CGRect] {
         let point = scene.characterPosition
         let x = (point.x / 4).rounded() * 4
-        let y = (point.y / 4).rounded() * 4
+        let bob = scene.appearance.character == .droplet && scene.phase == .reminding
+            ? sin(scene.phaseTime * 2.8).rounded() * 4 : 0
+        let y = (point.y / 4).rounded() * 4 + bob
+        let regions = scene.appearance.character == .claude
+            ? claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime)
+            : dropletHitRegions(phase: scene.phase, poseTime: scene.phaseTime,
+                                theme: scene.appearance.theme)
         let bounds = CGRect(origin: .zero, size: scene.viewport)
-        return claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime).compactMap { region in
+        return regions.compactMap { region in
             let clipped = region.offsetBy(dx: x, dy: y).intersection(bounds)
             return clipped.isNull || clipped.isEmpty ? nil : clipped
         }
@@ -240,7 +340,8 @@ public enum PixelArt {
         }
     }
 
-    public static func speech(in context: CGContext, at origin: CGPoint, acknowledged: Bool) {
+    public static func speech(in context: CGContext, at origin: CGPoint, acknowledged: Bool,
+                              theme: ReminderTheme = .blue) {
         context.saveGState()
         context.translateBy(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
         let border = WaterPalette.rope
@@ -255,12 +356,12 @@ public enum PixelArt {
         pixelText(acknowledged ? "GOOD JOB!" : "WATER TIME", in: context,
                   at: CGPoint(x: acknowledged ? 36 : 30, y: 12), scale: 2,
                   color: acknowledged ? WaterPalette.clay : WaterPalette.ink)
-        let secondary = acknowledged ? "喝口水，下次见" : "点我，喝水去"
+        let secondary = acknowledged ? "喝口水，下次见" : "按钮记录喝水"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: WaterPalette.rope
         ]
-        (secondary as NSString).draw(at: CGPoint(x: acknowledged ? 43 : 53, y: 37), withAttributes: attributes)
+        (secondary as NSString).draw(at: CGPoint(x: acknowledged ? 43 : 58, y: 37), withAttributes: attributes)
         context.restoreGState()
     }
 
@@ -357,14 +458,22 @@ public enum SceneRenderer {
         PixelArt.rope(in: context, x: point.x - 48, from: scene.topInset, to: point.y + 43)
         if scene.phase == .reminding || scene.phase == .acknowledging {
             PixelArt.speech(in: context, at: CGPoint(x: max(12, point.x - 255), y: point.y - 36),
-                            acknowledged: scene.hasAcknowledged)
+                            acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme)
         }
-        PixelArt.claude(in: context, at: point, phase: scene.phase,
-                        poseTime: scene.phaseTime, hovered: scene.isHovered)
+        if scene.appearance.character == .claude {
+            PixelArt.claude(in: context, at: point, phase: scene.phase,
+                            poseTime: scene.phaseTime, hovered: scene.isHovered,
+                            theme: scene.appearance.theme)
+        } else {
+            PixelArt.droplet(in: context, at: point, phase: scene.phase,
+                             poseTime: scene.phaseTime, hovered: scene.isHovered,
+                             theme: scene.appearance.theme)
+        }
         for bottle in scene.bottles {
             // Large bottles come toward the viewer and rotate in 15-degree steps.
             let scale = (bottle.scale * 2).rounded() / 2
-            PixelArt.bottle(in: context, at: bottle.position, scale: scale, angle: bottle.angle)
+            PixelArt.bottle(in: context, at: bottle.position, scale: scale,
+                            angle: bottle.angle, theme: scene.appearance.theme)
         }
         for particle in scene.particles {
             let opacity = max(0, 1 - particle.age / particle.lifetime)

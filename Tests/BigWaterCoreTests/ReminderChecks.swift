@@ -144,6 +144,171 @@ struct ReminderChecks {
         try expect(schedule.nextReminderAt == now.addingTimeInterval(2_800), "Sleeping interval edit did not apply at wake")
     }
 
+    func invalidDecodedPreferencesAreSanitized() throws {
+        let json = #"{"intervalHours":99,"weekdayHours":{"startMinutes":800,"endMinutes":700},"weekendHours":{"startMinutes":0,"endMinutes":1500},"style":"animated","soundEnabled":false,"appearance":{"theme":"blue","character":"claude"}}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(AppPreferences.self, from: json)
+        let preferences = decoded.validated()
+        try expect(preferences.intervalHours == ReminderSchedule.maximumHours, "Decoded interval was not clamped")
+        try expect(preferences.weekdayHours == DailyHours(), "Invalid weekday window did not use defaults")
+        try expect(preferences.weekendHours == nil, "Invalid weekend window was retained")
+    }
+
+    func weekdayAndWeekendWindows() throws {
+        let weekdayHours = DailyHours(startMinutes: 8 * 60, endMinutes: 20 * 60)
+        let weekendHours = DailyHours(startMinutes: 10 * 60, endMinutes: 18 * 60)
+        var schedule = ReminderSchedule(now: date(15, 7), uptime: 0, calendar: calendar,
+                                        weekdayHours: weekdayHours, weekendHours: weekendHours)
+        try expect(!schedule.isWithinReminderHours && schedule.nextBoundaryAt == date(15, 8),
+                   "Weekday schedule ignored its custom start")
+        schedule.update(at: date(17, 9), uptime: 0, calendar: calendar)
+        try expect(!schedule.isWithinReminderHours && schedule.nextBoundaryAt == date(17, 10),
+                   "Weekend schedule did not use its separate start")
+        schedule.update(at: date(17, 18), uptime: 0, calendar: calendar)
+        try expect(!schedule.isWithinReminderHours && schedule.nextBoundaryAt == date(18, 10),
+                   "Weekend cutoff did not advance to the next weekend window")
+    }
+
+    func snapshotRestoresSameDayWithoutOfflineTime() throws {
+        var active = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        active.update(at: date(15, 9, 30), uptime: 1_800, calendar: calendar)
+        let saved = active.snapshot(at: date(15, 9, 30), uptime: 1_800, calendar: calendar)
+        let encoded = try JSONEncoder().encode(saved)
+        let decoded = try JSONDecoder().decode(ReminderSnapshot.self, from: encoded)
+        let restored = ReminderSchedule(now: date(15, 13), uptime: 50_000, calendar: calendar,
+                                        snapshot: decoded)
+        try expect(restored.remainingTime == 5_400, "Offline time consumed the saved countdown")
+        try expect(restored.nextReminderAt == date(15, 14, 30), "Restored countdown used the old deadline")
+        let changedSettings = ReminderSchedule(now: date(15, 13), uptime: 50_000, calendar: calendar,
+                                              weekdayHours: DailyHours(startMinutes: 7 * 60, endMinutes: 22 * 60),
+                                              snapshot: decoded)
+        try expect(changedSettings.remainingTime == 7_200,
+                   "Snapshot from different schedule settings was restored")
+        var tokyo = calendar
+        tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let changedZone = ReminderSchedule(now: date(15, 13), uptime: 50_000, calendar: tokyo,
+                                           snapshot: decoded)
+        try expect(changedZone.remainingTime == 7_200,
+                   "Snapshot from a different timezone was restored")
+
+        var awaiting = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        awaiting.reminderDidStart()
+        let awaitingSnapshot = awaiting.snapshot(at: now, uptime: 0, calendar: calendar)
+        let awaitingRestore = ReminderSchedule(now: date(15, 11), uptime: 7_200, calendar: calendar,
+                                               snapshot: awaitingSnapshot)
+        try expect(awaitingRestore.isAwaitingAcknowledgment && awaitingRestore.nextReminderAt == nil,
+                   "Same-day restore lost the outstanding reminder")
+    }
+
+    func staleReminderIsDiscardedOutsideWindow() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.reminderDidStart()
+        let saved = schedule.snapshot(at: now, uptime: 0, calendar: calendar)
+        let afterHours = ReminderSchedule(now: date(15, 22, 30), uptime: 0, calendar: calendar,
+                                          snapshot: saved)
+        try expect(!afterHours.isAwaitingAcknowledgment && afterHours.remainingTime == 7_200,
+                   "Nighttime restore retained a stale reminder")
+        let nextDay = ReminderSchedule(now: date(16, 8), uptime: 10, calendar: calendar,
+                                       snapshot: saved)
+        try expect(!nextDay.isAwaitingAcknowledgment && nextDay.remainingTime == 7_200,
+                   "New-day restore inherited stale reminder state")
+    }
+
+    func pauseResumesCountdownAndReoffersOutstandingReminder() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 9, 20), uptime: 1_200, calendar: calendar)
+        schedule.pause(for: 30, at: date(15, 9, 20), uptime: 1_200, calendar: calendar)
+        try expect(schedule.isManuallyPaused && schedule.remainingTime == 6_000,
+                   "Pause changed the existing countdown")
+        try expect(schedule.nextCheckAt == date(15, 9, 50), "Pause did not arm its expiry")
+        schedule.resume(at: date(15, 10), uptime: 1_200, calendar: calendar)
+        try expect(!schedule.isManuallyPaused && schedule.remainingTime == 6_000,
+                   "Time spent paused consumed the countdown")
+        schedule.update(at: date(15, 10, 1), uptime: 1_260, calendar: calendar)
+        try expect(schedule.remainingTime == 5_940, "Countdown did not resume after pause")
+
+        var outstanding = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        outstanding.reminderDidStart()
+        outstanding.pause(for: 30, at: now, uptime: 0, calendar: calendar)
+        try expect(!outstanding.isAwaitingAcknowledgment && !outstanding.isDue,
+                   "Pause did not hide the outstanding reminder")
+        outstanding.resume(at: date(15, 9, 20), uptime: 0, calendar: calendar)
+        try expect(outstanding.isDue, "Resume did not re-offer the hidden reminder")
+    }
+
+    func pauseExpiryIgnoresWallClockCorrections() throws {
+        var forward = ReminderSchedule(now: now, uptime: 100, calendar: calendar)
+        forward.pause(for: 30, at: now, uptime: 100, calendar: calendar)
+        let jumpedForward = now.addingTimeInterval(3_600)
+        forward.update(at: jumpedForward, uptime: 160, calendar: calendar)
+        try expect(forward.isManuallyPaused, "Forward clock correction canceled the pause")
+        try expect(forward.pausedUntil == jumpedForward.addingTimeInterval(29 * 60),
+                   "Forward correction did not rebase the visible pause deadline")
+        forward.update(at: jumpedForward.addingTimeInterval(29 * 60), uptime: 1_900, calendar: calendar)
+        try expect(!forward.isManuallyPaused, "Monotonic pause did not expire after 30 active minutes")
+
+        var backward = ReminderSchedule(now: now, uptime: 100, calendar: calendar)
+        backward.pause(for: 30, at: now, uptime: 100, calendar: calendar)
+        let jumpedBackward = now.addingTimeInterval(-3_600)
+        backward.update(at: jumpedBackward, uptime: 160, calendar: calendar)
+        try expect(backward.isManuallyPaused, "Backward clock correction canceled the pause")
+        try expect(backward.pausedUntil == jumpedBackward.addingTimeInterval(29 * 60),
+                   "Backward correction did not rebase the visible pause deadline")
+        backward.update(at: jumpedBackward.addingTimeInterval(29 * 60), uptime: 1_900, calendar: calendar)
+        try expect(!backward.isManuallyPaused, "Backward-adjusted pause did not expire monotonically")
+    }
+
+    func futurePauseRestoresAcrossLocalDayBoundary() throws {
+        let allDay = DailyHours(startMinutes: 0, endMinutes: 1_440)
+        var schedule = ReminderSchedule(now: date(15, 23, 45), uptime: 0, calendar: calendar,
+                                        weekdayHours: allDay)
+        schedule.pause(for: 60, at: date(15, 23, 45), uptime: 0, calendar: calendar)
+        let saved = schedule.snapshot(at: date(15, 23, 50), uptime: 300, calendar: calendar)
+        var restored = ReminderSchedule(now: date(16, 0, 5), uptime: 100, calendar: calendar,
+                                        weekdayHours: allDay, snapshot: saved)
+        try expect(restored.isManuallyPaused && restored.pausedUntil == date(16, 0, 45),
+                   "Cross-day restart discarded the remaining manual pause")
+        try expect(restored.remainingTime == 7_200 && !restored.isAwaitingAcknowledgment
+                   && !restored.isSnoozed,
+                   "Cross-day pause restore retained stale reminder state")
+        restored.update(at: date(16, 0, 45), uptime: 2_500, calendar: calendar)
+        try expect(!restored.isManuallyPaused && restored.remainingTime == 7_200,
+                   "Cross-day pause did not expire with a fresh daily interval")
+    }
+
+    func snoozeUsesShortActiveIntervalAndKeepsNormalInterval() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.reminderDidStart()
+        schedule.snooze(minutes: 10, at: now, uptime: 0, calendar: calendar)
+        try expect(!schedule.isAwaitingAcknowledgment && schedule.isSnoozed,
+                   "Snooze did not hide the outstanding reminder")
+        try expect(schedule.intervalHours == 2 && schedule.remainingTime == 600,
+                   "Snooze changed the normal interval")
+        try expect(schedule.nextReminderAt == date(15, 9, 10), "Snooze deadline was not ten minutes")
+        schedule.update(at: date(15, 9, 10), uptime: 600, calendar: calendar)
+        try expect(schedule.isDue && schedule.isSnoozed, "Snoozed reminder did not become due")
+        schedule.reminderDidStart()
+        try expect(!schedule.isSnoozed && schedule.remainingTime == 7_200,
+                   "Next reminder did not return to the configured interval")
+
+        schedule.snooze(minutes: 20, at: date(15, 9, 10), uptime: 600, calendar: calendar)
+        let saved = schedule.snapshot(at: date(15, 9, 10), uptime: 600, calendar: calendar)
+        let restored = ReminderSchedule(now: date(15, 9, 15), uptime: 5_000, calendar: calendar,
+                                        snapshot: saved)
+        try expect(restored.isSnoozed && restored.remainingTime == 1_200,
+                   "Snapshot did not preserve snooze state or exclude offline time")
+    }
+
+    func hydrationHistoryCountsExplicitDrinksByLocalDay() throws {
+        var history = HydrationHistory()
+        history.recordDrink(at: date(15, 10))
+        history.recordDrink(at: date(15, 8))
+        history.recordDrink(at: date(16, 9))
+        try expect(history.count(on: date(15, 12), calendar: calendar) == 2,
+                   "Drink history mixed adjacent local days")
+        try expect(history.drinks(on: date(15, 12), calendar: calendar) == [date(15, 8), date(15, 10)],
+                   "Drink history was not returned in chronological order")
+    }
+
     func slideThrowClickAndClimb() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
         try expect(scene.characterPosition.y < 0, "Claude did not start above screen")
@@ -200,6 +365,24 @@ struct ReminderChecks {
         try expect(!regions.isEmpty, "Entering Claude has no visible hit regions")
         try expect(regions.allSatisfy { bounds.contains($0) }, "Input region escaped onto another display")
     }
+
+    func dropletThemesKeepInputAndAnimationBounded() throws {
+        for theme in ReminderTheme.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 900, height: 600),
+                                      appearance: ReminderAppearance(theme: theme, character: .droplet))
+            try expect(PixelArt.characterHitRegions(in: scene).isEmpty, "Off-screen droplet intercepted input")
+            scene.advance(by: 15)
+            try expect(scene.phase == .reminding && scene.throwCount == 0 && scene.bottles.isEmpty,
+                       "Droplet did not stay in its own reminder animation")
+            let bounds = CGRect(origin: .zero, size: scene.viewport)
+            let regions = PixelArt.characterHitRegions(in: scene)
+            try expect(!regions.isEmpty && regions.allSatisfy { bounds.contains($0) }, "Droplet input escaped its display")
+            try expect(regions.contains { $0.contains(scene.characterPosition) }, "Droplet's center could not be clicked")
+            try expect(scene.acknowledge(), "Droplet click failed")
+            scene.advance(by: 3)
+            try expect(scene.phase == .finished, "Droplet exit never finished")
+        }
+    }
 }
 
 @main
@@ -217,11 +400,21 @@ enum BigWaterChecks {
             ("click resets interval without queued reminders", suite.nextIntervalStartsAtClickAndDoesNotQueue),
             ("interval changes during reminders", suite.intervalChangeDuringReminderWaitsForClick),
             ("invalid preferences and idle interval changes", suite.invalidPreferencesAndIntervalChange),
+            ("decoded preferences are sanitized", suite.invalidDecodedPreferencesAreSanitized),
+            ("weekday and weekend reminder windows", suite.weekdayAndWeekendWindows),
+            ("same-day snapshot restore excludes offline time", suite.snapshotRestoresSameDayWithoutOfflineTime),
+            ("stale reminders are discarded at night and on a new day", suite.staleReminderIsDiscardedOutsideWindow),
+            ("pause preserves and resumes the countdown", suite.pauseResumesCountdownAndReoffersOutstandingReminder),
+            ("manual pause ignores wall-clock corrections", suite.pauseExpiryIgnoresWallClockCorrections),
+            ("future manual pause survives a cross-day restart", suite.futurePauseRestoresAcrossLocalDayBoundary),
+            ("snooze uses a short interval and keeps the normal interval", suite.snoozeUsesShortActiveIntervalAndKeepsNormalInterval),
+            ("drink history counts explicit confirmations by local day", suite.hydrationHistoryCountsExplicitDrinksByLocalDay),
             ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),
             ("early click during descent", suite.earlyClickDuringDescent),
             ("bounded objects over a long reminder", suite.persistentReminderHasBoundedParticles),
             ("only Claude's visible pixels intercept clicks", suite.hitRegionsExcludeRopeWaterAndTransparentGaps),
-            ("descent cannot leak input windows onto another display", suite.descendingHitRegionsStayOnTheirDisplay)
+            ("descent cannot leak input windows onto another display", suite.descendingHitRegionsStayOnTheirDisplay),
+            ("all droplet themes keep animation and input bounded", suite.dropletThemesKeepInputAndAnimationBounded)
         ]
         var failures = 0
         for (name, run) in checks {

@@ -9,6 +9,7 @@ private final class SessionChecks {
     private var uptime: TimeInterval = 0
     private let calendar = Calendar.autoupdatingCurrent
     private var delegate: AppDelegate!
+    private var advanceAfterNextDateRead: TimeInterval?
 
     init() {
         now = Calendar.autoupdatingCurrent.date(from: DateComponents(
@@ -21,6 +22,16 @@ private final class SessionChecks {
 
     private var schedule: ReminderSchedule { property("schedule", as: ReminderSchedule.self) }
     private var overlay: OverlayController { property("overlay", as: OverlayController.self) }
+
+    private func readDate() -> Date {
+        let result = now
+        if let advance = advanceAfterNextDateRead {
+            advanceAfterNextDateRead = nil
+            now = now.addingTimeInterval(advance)
+            uptime += advance
+        }
+        return result
+    }
 
     private func move(to day: Int, _ hour: Int, _ minute: Int = 0) {
         let next = calendar.date(from: DateComponents(year: 2026, month: 10, day: day,
@@ -45,7 +56,7 @@ private final class SessionChecks {
         preferences.set(2.0, forKey: "reminderIntervalHours")
         preferences.set(true, forKey: "launchAtLogin")
         defer { preferences.removePersistentDomain(forName: suiteName) }
-        delegate = AppDelegate(dateNow: { self.now }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer { delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification)) }
         try expect(schedule.intervalHours == 2, "Run session checks with the standard two-hour interval")
@@ -134,6 +145,126 @@ private final class SessionChecks {
         try expect(!overlay.isActive, "Yesterday's paused exit animation returned in the morning")
         try expect(schedule.nextReminderAt == now.addingTimeInterval(9_000), "Exit cleanup changed the new day's interval")
         print("PASS: exit animation resumes on the same day and is discarded across days")
+
+        move(to: 20, 10, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment, "Drink-confirmation fixture did not start")
+        overlay.confirmDrink()
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1,
+                   "The drink button did not record immediately at click time")
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(9_000), "Drink click did not immediately restart the regular interval")
+        overlay.confirmDrink()
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1, "Double click counted a drink twice")
+        try expect(AppStorage(defaults: preferences).loadHistory().count(on: now) == 1, "Drink confirmation was not saved")
+        let saved = AppStorage(defaults: preferences)
+        try expect(saved.loadPreferences().intervalHours == 2.5
+                   && saved.loadProgress()?.isAwaitingAcknowledgment == false
+                   && saved.loadProgress()?.remainingTime == 9_000,
+                   "Drink, settings and new countdown were not committed as one state")
+        overlay.stop()
+        print("PASS: explicit drink confirms immediately, saves locally and ignores double click")
+
+        let model = property("settings", as: SettingsModel.self)
+        model.change {
+            $0.style = .compact
+            $0.appearance = ReminderAppearance(theme: .mint, character: .droplet)
+        }
+        let originalDeadline = schedule.nextReminderAt
+        model.onPreview?()
+        try expect(overlay.isActive && property("isPreviewing", as: Bool.self), "Appearance preview did not start")
+        overlay.confirmDrink()
+        try expect(!overlay.isActive && !property("isPreviewing", as: Bool.self), "Preview action did not close the preview")
+        try expect(schedule.nextReminderAt == originalDeadline, "Appearance preview changed the deadline")
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1, "Preview recorded a drink")
+        print("PASS: appearance preview leaves countdown and drink history unchanged")
+
+        move(to: 20, 13)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isActive && overlay.isAwaitingAcknowledgment, "Compact reminder failed to start")
+        overlay.snooze(minutes: 10)
+        try expect(!overlay.isActive && schedule.isSnoozed && schedule.remainingTime == 600,
+                   "Ten-minute action did not close and snooze")
+        move(to: 20, 13, 10)
+        post(.NSSystemClockDidChange, workspace: false)
+        overlay.snooze(minutes: 20)
+        try expect(!overlay.isActive && schedule.isSnoozed && schedule.remainingTime == 1_200,
+                   "Twenty-minute action did not use the selected delay")
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1, "Snoozing recorded a drink")
+        print("PASS: compact reminder and both snooze actions preserve drink history")
+
+        move(to: 20, 13, 15)
+        model.onPause?(30)
+        try expect(schedule.isManuallyPaused && schedule.remainingTime == 900, "Pause did not preserve the snoozed countdown")
+        try expect(schedule.nextCheckAt == now.addingTimeInterval(1_800), "Pause did not schedule automatic resume")
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        move(to: 20, 13, 20)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        try expect(schedule.isManuallyPaused && schedule.remainingTime == 900, "Restart lost pause or counted offline time")
+        try expect(property("configuration", as: AppPreferences.self).style == .compact,
+                   "Restart lost reminder preferences")
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1, "Restart lost explicit drink history")
+        move(to: 20, 13, 45)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!schedule.isManuallyPaused && schedule.nextReminderAt == now.addingTimeInterval(900),
+                   "Pause expiry did not resume from the saved remaining time")
+        print("PASS: restart restores pause, snooze, settings and history without counting offline time")
+
+        move(to: 20, 14)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment, "Restored countdown did not become due")
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        move(to: 20, 14, 5)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        try expect(overlay.isActive && schedule.isAwaitingAcknowledgment, "Restart restored pending state without its visible reminder")
+        overlay.acknowledge()
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1, "Character dismissal counted a drink")
+        print("PASS: outstanding reminder is re-presented after restart and dismiss does not record")
+
+        move(to: 21, 8)
+        post(.NSCalendarDayChanged, workspace: false)
+        move(to: 21, 10, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment, "Cutoff confirmation fixture did not start")
+        move(to: 21, 22)
+        overlay.confirmDrink()
+        try expect(property("history", as: HydrationHistory.self).count(on: now) == 1,
+                   "Visible drink confirmation was lost at the closing boundary")
+        try expect(!overlay.isActive && !schedule.isCounting, "Cutoff confirmation restarted night counting")
+        print("PASS: a visible real drink button records at cutoff without restarting night counting")
+
+        move(to: 22, 8)
+        post(.NSCalendarDayChanged, workspace: false)
+        move(to: 22, 10, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        move(to: 22, 22)
+        let cutoff = now
+        now = cutoff.addingTimeInterval(-0.001)
+        uptime -= 0.001
+        advanceAfterNextDateRead = 0.001
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(schedule.nextCheckAt == cutoff, "Saving across the cutoff replaced the closing timer with tomorrow's opening")
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!overlay.isActive && !schedule.isCounting, "A cutoff crossed during saving left the reminder visible")
+        print("PASS: saving across a clock boundary preserves the closing callback")
+
+        let visible = CGRect(x: 0, y: 24, width: 900, height: 540)
+        for character in ReminderCharacter.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 900, height: 600),
+                                      appearance: ReminderAppearance(character: character))
+            scene.advance(by: 2)
+            for preview in [false, true] {
+                let animated = OverlayControls.animatedButtons(in: scene, visibleBounds: visible, isPreview: preview)
+                let compact = OverlayControls.compactLayout(visibleBounds: visible, isPreview: preview)
+                try expect(animated.buttons.allSatisfy { visible.contains($0.frame) }, "Animated controls escaped the visible display")
+                try expect(visible.contains(compact.card) && compact.buttons.allSatisfy { compact.card.contains($0.frame) },
+                           "Compact controls escaped their card")
+                try expect(animated.buttons.count == (preview ? 1 : 3) && compact.buttons.count == (preview ? 1 : 3),
+                           "Preview exposed a real drink or snooze action")
+            }
+        }
+        print("PASS: reminder and preview button layouts stay inside the visible display")
     }
 }
 
@@ -143,7 +274,7 @@ private enum BigWaterSessionChecks {
         _ = NSApplication.shared
         do {
             try MainActor.assumeIsolated { try SessionChecks().run() }
-            print("8/8 session checks passed")
+            print("16/16 session checks passed")
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             exit(1)
