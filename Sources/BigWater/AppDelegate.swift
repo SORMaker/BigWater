@@ -27,18 +27,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var isScreenAwake = true
     private let dateNow: () -> Date
     private let uptimeNow: () -> TimeInterval
+    private let systemState: () -> SystemState
     private let preferences: UserDefaults
     private lazy var storage = AppStorage(defaults: preferences)
 
     private var canPresentReminder: Bool { !isSleeping && isSessionActive && isScreenAwake }
 
+    /// What the console session and displays report right now.
+    struct SystemState {
+        var isSessionActive: Bool
+        var isScreenAwake: Bool
+
+        static func current() -> SystemState {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let screenAwake = NSScreen.screens.contains {
+                guard let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+                else { return false }
+                return CGDisplayIsAsleep(number.uint32Value) == 0
+            }
+            return SystemState(isSessionActive: session?[kCGSessionOnConsoleKey as String] as? Bool ?? true,
+                               isScreenAwake: screenAwake)
+        }
+    }
+
     init(dateNow: @escaping () -> Date = Date.init,
          uptimeNow: @escaping () -> TimeInterval = { ReminderClock.uptime },
+         systemState: @escaping () -> SystemState = SystemState.current,
          preferences: UserDefaults = .standard) {
         self.dateNow = dateNow
         self.uptimeNow = uptimeNow
+        self.systemState = systemState
         self.preferences = preferences
         super.init()
+    }
+
+    /// Notifications can be missed (for example while another user is on
+    /// the console), so every wake-type event re-reads the real state.
+    private func refreshSystemState() {
+        let state = systemState()
+        isSessionActive = state.isSessionActive
+        isScreenAwake = state.isScreenAwake
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -52,11 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         configuration = storage.loadPreferences()
         history = storage.loadHistory()
-        isSessionActive = (CGSessionCopyCurrentDictionary() as? [String: Any])?[kCGSessionOnConsoleKey as String] as? Bool ?? true
-        isScreenAwake = NSScreen.screens.contains {
-            guard let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
-            return CGDisplayIsAsleep(number.uint32Value) == 0
-        }
+        refreshSystemState()
         schedule = ReminderSchedule(hours: configuration.intervalHours, now: dateNow(), uptime: uptimeNow(),
                                     isSessionActive: canPresentReminder,
                                     weekdayHours: configuration.weekdayHours, weekendHours: configuration.weekendHours,
@@ -64,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings = SettingsModel(preferences: configuration)
         settings.onPreferencesChange = { [weak self] in self?.changePreferences(to: $0) }
         settings.onPause = { [weak self] in self?.pause(for: $0) }
+        settings.onDrink = { [weak self] in self?.drinkFromMenu() }
+        settings.onSnooze = { [weak self] in self?.snoozeFromMenu(minutes: $0) }
         settings.onResume = { [weak self] in self?.resumeCountdown() }
         settings.onPreview = { [weak self] in self?.previewAppearance() }
         settings.onLaunchAtLoginChange = { [weak self] in self?.changeLaunchAtLogin(to: $0) }
@@ -169,6 +195,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard !isPreviewing, schedule.isAwaitingAcknowledgment else { checkReminder(); return }
         schedule.snooze(minutes: minutes, at: dateNow(), uptime: uptimeNow())
         checkReminder()
+    }
+
+    /// Menu actions go through the visible reminder when there is one, so it
+    /// plays the same exit as a click on its own button.
+    private func drinkFromMenu() {
+        if !isPreviewing && overlay.isAwaitingAcknowledgment { overlay.confirmDrink() }
+        else { acknowledged(drink: true) }
+    }
+
+    private func snoozeFromMenu(minutes: Int) {
+        if !isPreviewing && overlay.isAwaitingAcknowledgment { overlay.snooze(minutes: minutes) }
+        else { snooze(minutes: minutes) }
     }
 
     private func pause(for minutes: Int) {
@@ -281,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.countdownDeadline = schedule.isCounting ? schedule.nextReminderAt : nil
         settings.countdownOverride = nil
         settings.isManuallyPaused = schedule.isManuallyPaused
+        settings.isAwaitingAcknowledgment = schedule.isAwaitingAcknowledgment && !isPreviewing
         settings.canPreview = canPresentReminder && !overlay.isActive
         settings.todayDrinkTimes = history.drinks(on: now)
         if !schedule.isWithinReminderHours {
@@ -298,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else if schedule.isAwaitingAcknowledgment {
             settings.stateTitle = "等待你的确认"
             settings.countdownOverride = "喝口水吧"
-            settings.scheduleText = "喝水后点像素按钮，也可以稍后再提醒"
+            settings.scheduleText = "喝水后点提醒里或下面的按钮，也可以稍后再提醒"
         } else if let next = schedule.nextReminderAt {
             settings.stateTitle = schedule.isSnoozed ? "稍后提醒" : "距离下次提醒"
             settings.scheduleText = "下次提醒 \(next.formatted(date: .omitted, time: .shortened)) · 休眠时暂停"
@@ -318,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         observe(workspace, NSWorkspace.didWakeNotification) { [weak self] in
             self?.isSleeping = false
+            self?.refreshSystemState()
             self?.checkReminder()
         }
         observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { [weak self] in
@@ -325,11 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.checkReminder()
         }
         observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification) { [weak self] in
-            self?.isSessionActive = true
+            self?.refreshSystemState()
             self?.checkReminder()
         }
         observe(workspace, NSWorkspace.screensDidWakeNotification) { [weak self] in
-            self?.isScreenAwake = true
+            self?.refreshSystemState()
             self?.checkReminder()
         }
         observe(workspace, NSWorkspace.screensDidSleepNotification) { [weak self] in
@@ -337,6 +377,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.checkReminder()
         }
         observe(.default, NSApplication.didChangeScreenParametersNotification) { [weak self] in
+            // Displays may have been added, removed or put to sleep.
+            if self?.isSleeping == false { self?.refreshSystemState() }
             self?.overlay.screenParametersChanged()
             self?.checkReminder()
         }

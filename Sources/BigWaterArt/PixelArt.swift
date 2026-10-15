@@ -199,20 +199,6 @@ public enum PixelArt {
         hitRegions(for: claudeBlocks(phase: phase, poseTime: poseTime, hovered: false))
     }
 
-    /// Clip the sprite to its canvas before creating desktop input windows.
-    /// During descent the un-clipped pixels are above this display; on a
-    /// vertically arranged second display they must not become visible there.
-    public static func claudeHitRegions(in scene: ReminderScene) -> [CGRect] {
-        let point = scene.characterPosition
-        let x = (point.x / 4).rounded() * 4
-        let y = (point.y / 4).rounded() * 4
-        let bounds = CGRect(origin: .zero, size: scene.viewport)
-        return claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime).compactMap { region in
-            let clipped = region.offsetBy(dx: x, dy: y).intersection(bounds)
-            return clipped.isNull || clipped.isEmpty ? nil : clipped
-        }
-    }
-
     public static func droplet(in context: CGContext, at point: CGPoint,
                                phase: ReminderPhase, poseTime: Double,
                                hovered: Bool = false, theme: ReminderTheme = .blue) {
@@ -308,6 +294,9 @@ public enum PixelArt {
         return regions
     }
 
+    /// Clip the sprite to its canvas before creating desktop input windows.
+    /// During descent the un-clipped pixels are above this display; on a
+    /// vertically arranged second display they must not become visible there.
     public static func characterHitRegions(in scene: ReminderScene) -> [CGRect] {
         let point = scene.characterPosition
         let x = (point.x / 4).rounded() * 4
@@ -341,7 +330,7 @@ public enum PixelArt {
     }
 
     public static func speech(in context: CGContext, at origin: CGPoint, acknowledged: Bool,
-                              theme: ReminderTheme = .blue) {
+                              theme: ReminderTheme = .blue, isPreview: Bool = false) {
         context.saveGState()
         context.translateBy(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
         let border = WaterPalette.rope
@@ -356,7 +345,7 @@ public enum PixelArt {
         pixelText(acknowledged ? "GOOD JOB!" : "WATER TIME", in: context,
                   at: CGPoint(x: acknowledged ? 36 : 30, y: 12), scale: 2,
                   color: acknowledged ? WaterPalette.clay : WaterPalette.ink)
-        let secondary = acknowledged ? "喝口水，下次见" : "按钮记录喝水"
+        let secondary = acknowledged ? "喝口水，下次见" : (isPreview ? "这是预览效果" : "按钮记录喝水")
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: WaterPalette.rope
@@ -458,7 +447,8 @@ public enum SceneRenderer {
         PixelArt.rope(in: context, x: point.x - 48, from: scene.topInset, to: point.y + 43)
         if let origin = speechOrigin(for: scene) {
             PixelArt.speech(in: context, at: origin,
-                            acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme)
+                            acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme,
+                            isPreview: scene.isPreview)
         }
         if scene.appearance.character == .claude {
             PixelArt.claude(in: context, at: point, phase: scene.phase,

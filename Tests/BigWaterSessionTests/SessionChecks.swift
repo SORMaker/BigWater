@@ -41,7 +41,18 @@ private final class SessionChecks {
         now = next
     }
 
+    /// What the simulated session and displays report when the app asks.
+    /// Posting a notification also updates it, as the real system would.
+    private var system = AppDelegate.SystemState(isSessionActive: true, isScreenAwake: true)
+
     private func post(_ notification: Notification.Name, workspace: Bool = true) {
+        switch notification {
+        case NSWorkspace.screensDidSleepNotification: system.isScreenAwake = false
+        case NSWorkspace.screensDidWakeNotification: system.isScreenAwake = true
+        case NSWorkspace.sessionDidResignActiveNotification: system.isSessionActive = false
+        case NSWorkspace.sessionDidBecomeActiveNotification: system.isSessionActive = true
+        default: break
+        }
         let center = workspace ? NSWorkspace.shared.notificationCenter : NotificationCenter.default
         center.post(name: notification, object: nil)
     }
@@ -57,7 +68,8 @@ private final class SessionChecks {
         preferences.set(2.0, forKey: "reminderIntervalHours")
         preferences.set(true, forKey: "launchAtLogin")
         defer { preferences.removePersistentDomain(forName: suiteName) }
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer { delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification)) }
         try expect(schedule.intervalHours == 2, "Run session checks with the standard two-hour interval")
@@ -82,6 +94,7 @@ private final class SessionChecks {
         post(NSWorkspace.sessionDidBecomeActiveNotification)
         try expect(schedule.remainingTime == 4_500, "Inactive user session consumed time")
         print("PASS: inactive user session pauses countdown")
+
 
         move(to: 15, 16, 15)
         post(.NSSystemClockDidChange, workspace: false)
@@ -199,7 +212,8 @@ private final class SessionChecks {
         try expect(schedule.nextCheckAt == now.addingTimeInterval(1_800), "Pause did not schedule automatic resume")
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         move(to: 20, 13, 20)
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         try expect(schedule.isManuallyPaused && schedule.remainingTime == 900, "Restart lost pause or counted offline time")
         try expect(property("configuration", as: AppPreferences.self).style == .compact,
@@ -216,7 +230,8 @@ private final class SessionChecks {
         try expect(overlay.isAwaitingAcknowledgment, "Restored countdown did not become due")
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         move(to: 20, 14, 5)
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         try expect(overlay.isActive && schedule.isAwaitingAcknowledgment, "Restart restored pending state without its visible reminder")
         overlay.acknowledge()
@@ -273,7 +288,8 @@ private final class SessionChecks {
                    "This build's own saved state was treated as unreadable")
         let otherBuild = #"{"preferences":{"intervalHours":1.5,"style":"compact","weekdayHours":{"endMinutes":1320,"startMinutes":360},"appearance":{"character":"droplet","theme":"ocean"}},"history":{"drinks":[813717000,813720540]},"progress":{"remainingTime":"later"}}"#
         preferences.set(Data(otherBuild.utf8), forKey: "appStateV1")
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         try expect(property("history", as: HydrationHistory.self).drinks.count == 2,
                    "A schema mismatch hid the saved drink history")
@@ -287,7 +303,8 @@ private final class SessionChecks {
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         let unreadable = Data(#"{"history":{"drinks":"#.utf8)
         preferences.set(unreadable, forKey: "appStateV1")
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: preferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let backups = preferences.dictionaryRepresentation().filter { $0.key.hasPrefix("appStateV1.unreadable.") }
         try expect(backups.values.contains { $0 as? Data == unreadable },
@@ -302,7 +319,8 @@ private final class SessionChecks {
         overlayPreferences.set(true, forKey: "launchAtLogin")
         defer { overlayPreferences.removePersistentDomain(forName: overlaySuite) }
         move(to: 23, 9)
-        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime }, preferences: overlayPreferences)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: overlayPreferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         move(to: 23, 11)
         post(.NSSystemClockDidChange, workspace: false)
@@ -348,6 +366,47 @@ private final class SessionChecks {
         }
         overlay.stop()
         print("PASS: the compact card catches clicks under fully painted pixels")
+
+        // Missed notifications: the display slept without screensDidSleep, and
+        // later woke without screensDidWake. The app must read the real state.
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        let systemSuite = suiteName + ".system"
+        let systemPreferences = UserDefaults(suiteName: systemSuite)!
+        systemPreferences.set(true, forKey: "launchAtLogin")
+        defer { systemPreferences.removePersistentDomain(forName: systemSuite) }
+        move(to: 26, 9)
+        delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
+                               systemState: { self.system }, preferences: systemPreferences)
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        try expect(schedule.isCounting, "Missed-notification fixture did not start counting")
+        post(NSWorkspace.willSleepNotification)
+        system.isScreenAwake = false
+        move(to: 26, 9, 30)
+        post(NSWorkspace.didWakeNotification)
+        move(to: 26, 9, 40)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!schedule.isCounting && schedule.remainingTime == 7_200,
+                   "Counted while the display was dark after a missed screen-sleep notification")
+        system.isScreenAwake = true
+        post(NSWorkspace.sessionDidBecomeActiveNotification)
+        try expect(schedule.isCounting, "Stayed paused after a missed screen-wake notification")
+        print("PASS: wake events re-read the real display state")
+
+        // The menu offers the reminder's actions while it is waiting.
+        let menu = property("settings", as: SettingsModel.self)
+        move(to: 26, 11, 40)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment && menu.isAwaitingAcknowledgment, "Menu did not offer reminder actions")
+        menu.onSnooze?(10)
+        try expect(!overlay.isActive && schedule.isSnoozed && !menu.isAwaitingAcknowledgment, "Menu snooze did not close the reminder")
+        move(to: 26, 11, 50)
+        post(.NSSystemClockDidChange, workspace: false)
+        menu.onDrink?()
+        try expect(property("history", as: HydrationHistory.self).drinks.count == 1 && !schedule.isAwaitingAcknowledgment,
+                   "Menu drink confirmation was not recorded")
+        try expect(overlay.isActive && !overlay.isAwaitingAcknowledgment, "Menu confirmation skipped the exit animation")
+        overlay.stop()
+        print("PASS: the menu can confirm a drink or snooze a waiting reminder")
     }
 
     private func overlayField<T>(_ label: String, as type: T.Type) -> T {
@@ -366,7 +425,7 @@ private enum BigWaterSessionChecks {
         _ = NSApplication.shared
         do {
             try MainActor.assumeIsolated { try SessionChecks().run() }
-            print("22/22 session checks passed")
+            print("24/24 session checks passed")
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             exit(1)

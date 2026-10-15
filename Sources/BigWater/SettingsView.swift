@@ -11,6 +11,7 @@ final class SettingsModel: ObservableObject {
     @Published var remainingTime: TimeInterval = 0
     @Published var countdownDeadline: Date?
     @Published var isManuallyPaused = false
+    @Published var isAwaitingAcknowledgment = false
     @Published var isVisible = false
     @Published var canPreview = true
     @Published var todayDrinkTimes: [Date] = []
@@ -20,6 +21,8 @@ final class SettingsModel: ObservableObject {
     @Published var loginStatusText: String?
     var onPreferencesChange: ((AppPreferences) -> Void)?
     var onPause: ((Int) -> Void)?
+    var onDrink: (() -> Void)?
+    var onSnooze: ((Int) -> Void)?
     var onResume: (() -> Void)?
     var onPreview: (() -> Void)?
     var onLaunchAtLoginChange: ((Bool) -> Void)?
@@ -58,8 +61,9 @@ final class SettingsModel: ObservableObject {
     }
 
     func timeDate(minutes: Int) -> Date {
-        Calendar.autoupdatingCurrent.date(bySettingHour: (minutes / 60) % 24,
-                                          minute: minutes % 60, second: 0, of: Date())!
+        let calendar = Calendar.autoupdatingCurrent
+        return calendar.date(bySettingHour: (minutes / 60) % 24, minute: minutes % 60, second: 0, of: Date())
+            ?? calendar.startOfDay(for: Date())
     }
 
     func minutes(from date: Date, isEnd: Bool) -> Int {
@@ -85,6 +89,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 countdownCard
+                if model.isAwaitingAcknowledgment { reminderActions }
                 intervalRow
                 pauseControls
                 Divider()
@@ -107,7 +112,9 @@ struct SettingsView: View {
                 .keyboardShortcut("q", modifiers: .command)
             }
             .font(.system(size: 12))
-            .frame(width: 312, alignment: .leading)
+            // Follow the visible width: a scroll bar appears once an expanded
+            // section overflows, and fixed-width content would jump sideways.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(22)
         }
         .frame(width: Self.preferredSize.width, height: Self.preferredSize.height)
@@ -180,6 +187,19 @@ struct SettingsView: View {
             .background(.white.opacity(0.5))
             .overlay(Rectangle().stroke(ink.opacity(0.13), lineWidth: 1))
         }
+    }
+
+    /// The same actions as the on-screen reminder, reachable from the
+    /// keyboard, VoiceOver, or when the reminder is on another display.
+    private var reminderActions: some View {
+        HStack(spacing: 8) {
+            Button("我刚喝过水") { model.onDrink?() }
+                .buttonStyle(.borderedProminent).tint(clay)
+            Button("10 分钟后") { model.onSnooze?(10) }
+            Button("20 分钟后") { model.onSnooze?(20) }
+            Spacer(minLength: 0)
+        }
+        .controlSize(.small)
     }
 
     private var pauseControls: some View {

@@ -6,9 +6,6 @@ public struct ReminderSchedule {
     public static let defaultHours = 2.0
     public static let minimumHours = 0.5
     public static let maximumHours = 24.0
-    // Retained for callers that still display the historic default window.
-    public static let startHour = 6
-    public static let stopHour = 22
 
     public private(set) var intervalHours: Double
     public private(set) var remainingTime: TimeInterval
@@ -192,9 +189,11 @@ public struct ReminderSchedule {
                                      uptime: TimeInterval = ReminderClock.uptime,
                                      calendar: Calendar = .autoupdatingCurrent) {
         update(at: now, uptime: uptime, calendar: calendar)
+        let elapsed = max(0, intervalHours * 3_600 - remainingTime)
         intervalHours = Self.validated(hours)
         if !isAwaitingAcknowledgment && !isManuallyPaused && !isSnoozed {
-            remainingTime = intervalHours * 3_600
+            // Keep the use already counted, so + then − changes nothing.
+            remainingTime = max(0, intervalHours * 3_600 - elapsed)
         }
     }
 
@@ -294,9 +293,7 @@ public struct ReminderSchedule {
 
     private static func hours(for date: Date, weekday: DailyHours, weekend: DailyHours?,
                               calendar: Calendar) -> DailyHours {
-        guard let weekend,
-              let day = calendar.dateComponents([.weekday], from: date).weekday,
-              day == 1 || day == 7 else { return weekday }
+        guard let weekend, calendar.isDateInWeekend(date) else { return weekday }
         return weekend
     }
 

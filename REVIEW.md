@@ -92,6 +92,8 @@
 
 ### M5. 屏幕和会话状态只靠通知维护，漏掉一次通知就会长期错位（风险，未实测）
 
+> **已修复**（分支 `fix-m5-low-items`）：系统唤醒、会话恢复、亮屏和显示器变化时，都会重新读取真实的会话与显示器状态（`AppDelegate.SystemState`，测试中可注入）。会话检查模拟了“漏掉熄屏通知”和“漏掉亮屏通知”两种情况；换回只依赖通知的旧写法时检查失败。真实物理休眠仍未实测。
+
 - **位置**：[AppDelegate.swift:54-58](Sources/BigWater/AppDelegate.swift#L54)（只在启动时查询一次）、[AppDelegate.swift:309-332](Sources/BigWater/AppDelegate.swift#L309)
 - **现象**：`isScreenAwake` 和 `isSessionActive` 只在启动时实际查询一次，之后完全靠通知切换。可能出现两种情况：
   - 某次系统休眠前没有收到 `screensDidSleep`，唤醒时屏幕仍黑着，App 已经开始计时，甚至在黑屏上弹出提醒；
@@ -105,6 +107,8 @@
 
 ### L1. 调整提醒间隔会丢弃已累计的进度
 
+> **已修复**：修改间隔时保留已计入的使用时间，“+ 再 −”不再清零；新间隔短于已用时间时立即到期。原测试的期望已按新规则更新。
+
 - **位置**：[ReminderSchedule.swift:191-199](Sources/BigWaterCore/ReminderSchedule.swift#L191)、[AppDelegate.swift:137-139](Sources/BigWater/AppDelegate.swift#L137)
 - **证据**：探针 P3。剩余 10 分钟时点一次 +，剩余变为 2.5 小时；再点一次 −，剩余变为 2 小时。间隔最后没变，进度却清零了。
 - **说明**：测试 `invalidPreferencesAndIntervalChange` 断言了“空闲时修改间隔会重置”，所以这是有意的设计。但“+ 再 −”也会清零，很可能出乎用户意料。
@@ -112,11 +116,15 @@
 
 ### L2. 喝水记录无限增长，并且每 30 秒整块重写
 
+> **已修复**：只保留最近 90 天的记录（`HydrationHistory.retentionDays`），新记录按顺序插入，不再整体排序。
+
 - **位置**：[HydrationHistory.swift:11-14](Sources/BigWaterCore/HydrationHistory.swift#L11)、[AppDelegate.swift:238-241](Sources/BigWater/AppDelegate.swift#L238)
 - **现象**：记录从不清理，每次新增都对整个数组重新排序；计时期间每 30 秒的检查点都会把全部记录重新编码写入。探针 P5：一年约 2900 条、29 KB。界面只显示当天的记录。
 - **建议**：只保留最近 N 天，或者旧数据按天汇总；新记录按顺序插入，不再整体排序；配合 M1，只在内容变化时写入。
 
 ### L3. 水滴角色也会做 Claude 的扔水后坐动作
+
+> **已修复**：只有 Claude 计算扔水后坐，水滴的水平摆幅从 11.7pt 降到 6pt 以内。
 
 - **位置**：[ReminderScene.swift:70-74](Sources/BigWaterCore/ReminderScene.swift#L70)
 - **现象**：后坐偏移只看 `throwCycle`，没有区分角色。水滴并不扔水（`throwBottle` 对水滴直接返回），却每 1.35 秒横向抖一下。探针 P4 测得水滴的水平摆幅和 Claude 一样，都是 11.7pt。
@@ -124,17 +132,23 @@
 
 ### L4. 预览时对话气泡仍显示“按钮记录喝水”
 
+> **已修复**：场景记录是否为预览，预览时气泡显示“这是预览效果”。
+
 - **位置**：[PixelArt.swift:359](Sources/BigWaterArt/PixelArt.swift#L359)
 - **现象**：预览时唯一的按钮是“结束预览”，气泡文案和实际按钮不一致。
 - **建议**：`speech(...)` 增加一个 `isPreview` 参数，预览时换成预览文案。
 
 ### L5. 周末判定写死为周六、周日
 
+> **已修复**：改用 `calendar.isDateInWeekend`，检查覆盖周五、周六休息的地区。
+
 - **位置**：[ReminderSchedule.swift:295-301](Sources/BigWaterCore/ReminderSchedule.swift#L295)
 - **现象**：周末写死为 `weekday == 1 || weekday == 7`，在周五、周六休息的地区判断会出错。
 - **建议**：改用 `calendar.isDateInWeekend(date)`。
 
 ### L6. 菜单面板里无法处理正在显示的提醒
+
+> **已修复**：等待确认时，面板显示“我刚喝过水 / 10 分钟后 / 20 分钟后”，动作经由屏幕上的提醒执行，退场动画和记录与直接点击一致。
 
 - **位置**：[SettingsView.swift:185-197](Sources/BigWater/SettingsView.swift#L185)、[AppDelegate.swift:292-295](Sources/BigWater/AppDelegate.swift#L292)
 - **现象**：等待确认时，面板只提示“喝水后点像素按钮”，本身没有“我刚喝过水”或“稍后提醒”按钮。覆盖层窗口无法成为键盘焦点，只用键盘的用户、VoiceOver 用户，以及提醒出现在另一块屏幕上的用户都不容易操作。
@@ -150,10 +164,14 @@
 
 ### L8. 首次启动就自动注册登录项
 
+> **保留**：README 明确把默认开启登录启动作为个人偏好，这次不改。以后要分发时再改成首次询问。
+
 - **位置**：[AppDelegate.swift:342-345](Sources/BigWater/AppDelegate.swift#L342)
 - **说明**：README 已说明这是默认行为，个人使用没有问题。如果以后要分发，静默开启登录项通常需要征得用户同意，建议改成首次启动时询问。
 
 ### L9. 死代码与只为测试保留的接口
+
+> **已修复**：删除 `startHour`、`stopHour` 和 `claudeHitRegions(in:)`（测试改用 `characterHitRegions(in:)`）；`timeDate` 改为与 `localTime` 一致的回退写法。`OverlayController.isAwaitingAcknowledgment` 现在也被菜单动作使用，予以保留。
 
 - `ReminderSchedule.startHour` 和 `stopHour`（[ReminderSchedule.swift:9-11](Sources/BigWaterCore/ReminderSchedule.swift#L9)）已经没有任何引用。
 - `PixelArt.claudeHitRegions(in:)`（[PixelArt.swift:205](Sources/BigWaterArt/PixelArt.swift#L205)）和 `OverlayController.isAwaitingAcknowledgment` 只有测试在用。
@@ -213,6 +231,14 @@
 - **疑点**：如果用户在“系统设置 › 登录项”里关闭了 Big Water，`SMAppService` 很可能报告 `.requiresApproval`。代码把这个状态当作“已开启”，面板开关就会显示为开，同时提示“请允许”。
 
 ---
+
+## 审查后用户反馈的问题
+
+### F1. 展开设置分组后，整页内容向侧面偏移
+
+- **位置**：[SettingsView.swift:110-115](Sources/BigWater/SettingsView.swift#L110)
+- **原因**：内容宽度写死为 312pt。展开分组使内容超出弹窗高度后，系统显示 15pt 宽的滚动条，可见宽度变为 341pt，而 356pt 宽（含边距）的内容被居中放置，左右各偏约 7.5pt。用户截图中卡片距左边约 14pt、距右边约 29pt，与此吻合。
+- **修复**（分支 `fix-m5-low-items`）：内容改为跟随可见宽度（`maxWidth: .infinity`）。离屏渲染无法强制显示传统滚动条，**需在实机上确认**。
 
 ## 做得好的地方
 

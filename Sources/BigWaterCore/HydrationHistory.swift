@@ -20,9 +20,16 @@ public struct HydrationHistory: Codable, Equatable {
         init(from decoder: Decoder) throws { date = try? decoder.singleValueContainer().decode(Date.self) }
     }
 
-    public mutating func recordDrink(at date: Date) {
-        drinks.append(date)
-        drinks.sort()
+    /// Older confirmations are dropped; the app only shows recent days, and
+    /// the whole history is rewritten with every checkpoint.
+    public static let retentionDays = 90
+
+    public mutating func recordDrink(at date: Date, calendar: Calendar = .autoupdatingCurrent) {
+        drinks.insert(date, at: drinks.firstIndex { $0 > date } ?? drinks.endIndex)
+        if let cutoff = calendar.date(byAdding: .day, value: -Self.retentionDays,
+                                      to: calendar.startOfDay(for: date)) {
+            drinks.removeAll { $0 < cutoff }
+        }
     }
 
     public func count(on date: Date, calendar: Calendar = .autoupdatingCurrent) -> Int {

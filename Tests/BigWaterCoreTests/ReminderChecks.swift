@@ -136,12 +136,12 @@ struct ReminderChecks {
         try expect(ReminderSchedule.validated(30) == 24, "Maximum interval is not enforced")
         var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
         schedule.setInterval(hours: 1, now: now.addingTimeInterval(400), uptime: 400, calendar: calendar)
-        try expect(schedule.nextReminderAt == now.addingTimeInterval(4_000), "Idle interval change did not reset deadline")
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(3_600), "Idle interval change discarded counted use")
         schedule.update(at: now.addingTimeInterval(500), uptime: 500, isSessionActive: false, calendar: calendar)
         schedule.setInterval(hours: 0.5, now: now.addingTimeInterval(600), uptime: 600, calendar: calendar)
-        try expect(schedule.nextReminderAt == nil && schedule.remainingTime == 1_800, "Setting interval restarted a sleeping countdown")
+        try expect(schedule.nextReminderAt == nil && schedule.remainingTime == 1_300, "Setting interval restarted a sleeping countdown")
         schedule.update(at: now.addingTimeInterval(1_000), uptime: 1_000, isSessionActive: true, calendar: calendar)
-        try expect(schedule.nextReminderAt == now.addingTimeInterval(2_800), "Sleeping interval edit did not apply at wake")
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(2_300), "Sleeping interval edit did not apply at wake")
     }
 
     func invalidDecodedPreferencesAreSanitized() throws {
@@ -400,6 +400,55 @@ struct ReminderChecks {
         }
     }
 
+    func intervalEditsKeepCountedUse() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.update(at: date(15, 10, 50), uptime: 6_600, calendar: calendar)
+        schedule.setInterval(hours: 2.5, now: date(15, 10, 50), uptime: 6_600, calendar: calendar)
+        schedule.setInterval(hours: 2, now: date(15, 10, 50), uptime: 6_600, calendar: calendar)
+        try expect(schedule.remainingTime == 600, "Changing the interval and back restarted the countdown")
+        schedule.setInterval(hours: 1.5, now: date(15, 10, 50), uptime: 6_600, calendar: calendar)
+        try expect(schedule.isDue, "A shorter interval than the time already used did not become due")
+    }
+
+    func historyKeepsRecentDaysInOrder() throws {
+        var history = HydrationHistory()
+        history.recordDrink(at: date(15, 10), calendar: calendar)
+        history.recordDrink(at: date(15, 8), calendar: calendar)
+        history.recordDrink(at: date(15, 9), calendar: calendar)
+        try expect(history.drinks == [date(15, 8), date(15, 9), date(15, 10)], "Drinks were not kept in order")
+        let later = calendar.date(byAdding: .day, value: HydrationHistory.retentionDays + 1, to: date(15, 12))!
+        history.recordDrink(at: later, calendar: calendar)
+        try expect(history.drinks == [later], "Confirmations older than the retention window were kept")
+    }
+
+    func onlyClaudeRecoils() throws {
+        for character in ReminderCharacter.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900),
+                                      appearance: ReminderAppearance(character: character))
+            scene.advance(by: 2)
+            var xs: [Double] = []
+            for _ in 0..<90 { scene.advance(by: 1.0 / 30); xs.append(scene.characterPosition.x) }
+            let sway = xs.max()! - xs.min()!
+            try expect(character == .claude ? sway > 8 : sway <= 6.01,
+                       "\(character) sway \(sway)pt does not match whether it throws")
+        }
+    }
+
+    func weekendFollowsTheLocale() throws {
+        var israel = calendar
+        israel.locale = Locale(identifier: "he_IL")
+        let weekend = DailyHours(startMinutes: 10 * 60, endMinutes: 18 * 60)
+        // 2026-10-16 is a Friday, a weekend day in Israel but not in China.
+        let friday = date(16, 9)
+        let local = ReminderSchedule(now: friday, uptime: 0, calendar: israel, weekendHours: weekend)
+        try expect(!local.isWithinReminderHours && local.nextBoundaryAt == date(16, 10),
+                   "Friday did not use the weekend window in a Friday–Saturday locale")
+        var china = calendar
+        china.locale = Locale(identifier: "zh_CN")
+        let weekday = ReminderSchedule(now: friday, uptime: 0, calendar: china, weekendHours: weekend)
+        try expect(weekday.isWithinReminderHours, "Friday used the weekend window in a Saturday–Sunday locale")
+    }
+
     func slideThrowClickAndClimb() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
         try expect(scene.characterPosition.y < 0, "Claude did not start above screen")
@@ -449,10 +498,10 @@ struct ReminderChecks {
 
     func descendingHitRegionsStayOnTheirDisplay() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
-        try expect(PixelArt.claudeHitRegions(in: scene).isEmpty, "Off-screen Claude created visible input windows")
+        try expect(PixelArt.characterHitRegions(in: scene).isEmpty, "Off-screen Claude created visible input windows")
         scene.advance(by: 0.15)
         let bounds = CGRect(origin: .zero, size: scene.viewport)
-        let regions = PixelArt.claudeHitRegions(in: scene)
+        let regions = PixelArt.characterHitRegions(in: scene)
         try expect(!regions.isEmpty, "Entering Claude has no visible hit regions")
         try expect(regions.allSatisfy { bounds.contains($0) }, "Input region escaped onto another display")
     }
@@ -503,6 +552,10 @@ enum BigWaterChecks {
             ("state saved by 0.3.0 still decodes", suite.version030StateStillDecodes),
             ("stored preferences tolerate missing and unknown values", suite.storedPreferencesTolerateMissingAndUnknownValues),
             ("stored history keeps readable drinks", suite.storedHistoryKeepsReadableDrinks),
+            ("interval edits keep counted use", suite.intervalEditsKeepCountedUse),
+            ("history keeps recent days in order", suite.historyKeepsRecentDaysInOrder),
+            ("only Claude recoils", suite.onlyClaudeRecoils),
+            ("weekend follows the locale", suite.weekendFollowsTheLocale),
             ("redraw regions cover every drawn pixel", suite.paintedRegionsCoverEveryDrawnPixel),
             ("speech bubble click regions are fully painted", suite.speechBubbleClickRegionsAreFullyPainted),
             ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),

@@ -36,6 +36,8 @@ public struct ReminderScene {
     public private(set) var topInset: Double
     public private(set) var phase: ReminderPhase = .descending
     public let appearance: ReminderAppearance
+    /// A settings-page preview: it looks the same but records nothing.
+    public let isPreview: Bool
     public private(set) var phaseTime = 0.0
     public private(set) var time = 0.0
     public private(set) var bottles: [FlyingBottle] = []
@@ -45,10 +47,11 @@ public struct ReminderScene {
     private var retirementStart = CGPoint.zero
 
     public init(viewport: CGSize, topInset: Double = 24,
-                appearance: ReminderAppearance = .init()) {
+                appearance: ReminderAppearance = .init(), isPreview: Bool = false) {
         self.viewport = viewport
         self.topInset = topInset
         self.appearance = appearance
+        self.isPreview = isPreview
     }
 
     public var target: CGPoint {
@@ -68,7 +71,9 @@ public struct ReminderScene {
             return CGPoint(x: target.x + sin(t * .pi * 2) * 8,
                            y: -80 + (target.y + 80) * ease)
         case .reminding:
-            let recoil = throwCycle > Self.releaseTime && throwCycle < 0.84
+            // Only Claude throws, so only Claude recoils.
+            let recoil = appearance.character == .claude
+                && throwCycle > Self.releaseTime && throwCycle < 0.84
                 ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
             return CGPoint(x: target.x - recoil + sin(phaseTime * 2.1) * 3,
                            y: target.y + sin(phaseTime * 3.2) * 3)

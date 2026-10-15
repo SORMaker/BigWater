@@ -45,7 +45,8 @@ final class OverlayController {
         self.isPreview = isPreview
         self.actionInvoked = false
         self.scene = ReminderScene(viewport: selected.frame.size,
-                                   topInset: topInset(for: selected), appearance: appearance)
+                                   topInset: topInset(for: selected), appearance: appearance,
+                                   isPreview: isPreview)
         let panel = makePanel(frame: selected.frame, ignoresMouse: true)
         panel.title = isPreview ? "喝水提醒预览" : "喝水提醒"
         let view = AnimationCanvas(frame: CGRect(origin: .zero, size: selected.frame.size))
