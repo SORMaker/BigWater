@@ -1,7 +1,14 @@
 import AppKit
+import CoreFoundation
+import CoreGraphics
 import QuartzCore
 import BigWaterCore
 import BigWaterArt
+
+struct ReminderDisplay: Identifiable, Equatable {
+    let id: String
+    let name: String
+}
 
 @MainActor
 final class OverlayController {
@@ -29,6 +36,14 @@ final class OverlayController {
     private var lastFrameTime = 0.0
     private var lastPaintedRegions: [CGRect] = []
     private var isSuspended = false
+    private var placement = ReminderPlacement()
+
+    static var availableDisplays: [ReminderDisplay] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = displayIdentifier(for: screen) else { return nil }
+            return ReminderDisplay(id: id, name: screen.localizedName)
+        }
+    }
 
     var isActive: Bool { scene != nil }
     var isAwaitingAcknowledgment: Bool {
@@ -38,15 +53,19 @@ final class OverlayController {
 
     @discardableResult
     func start(appearance: ReminderAppearance = .init(), style: ReminderStyle = .animated,
-               isPreview: Bool = false, entrance: ReminderEntrance = .random()) -> Bool {
-        guard !isActive, let selected = preferredScreen() else { return false }
+               isPreview: Bool = false, entrance: ReminderEntrance = .random(),
+               placement: ReminderPlacement = .init()) -> Bool {
+        guard !isActive, let selected = preferredScreen(for: placement) else { return false }
         self.screen = selected
+        self.placement = placement
         self.style = style
         self.isPreview = isPreview
         self.actionInvoked = false
         self.scene = ReminderScene(viewport: selected.frame.size,
                                    topInset: topInset(for: selected), appearance: appearance,
-                                   isPreview: isPreview, entrance: entrance,
+                                   isPreview: isPreview,
+                                   entrance: OverlayControls.reminderEntrance(for: placement.position,
+                                                                             randomEntrance: entrance),
                                    visibleBounds: localVisibleBounds(for: selected))
         let panel = makePanel(frame: selected.frame, ignoresMouse: true)
         panel.title = isPreview ? "喝水提醒预览" : "喝水提醒"
@@ -134,7 +153,7 @@ final class OverlayController {
     }
 
     func resume() {
-        guard isActive, isSuspended, preferredScreen() != nil else { return }
+        guard isActive, isSuspended, preferredScreen(for: placement) != nil else { return }
         isSuspended = false
         screenParametersChanged()
         canvasPanel?.orderFrontRegardless()
@@ -144,11 +163,11 @@ final class OverlayController {
 
     func screenParametersChanged() {
         guard isActive else { return }
-        let originalID = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        let originalID = screen.flatMap { Self.displayIdentifier(for: $0) }
         let surviving = NSScreen.screens.first {
-            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber) == originalID
+            Self.displayIdentifier(for: $0) == originalID
         }
-        guard let selected = surviving ?? preferredScreen() else {
+        guard let selected = surviving ?? preferredScreen(for: placement) else {
             suspend()
             return
         }
@@ -244,7 +263,8 @@ final class OverlayController {
             canvas?.compactCardFrame = nil
         } else {
             let layout = OverlayControls.compactLayout(visibleBounds: localVisibleBounds(for: screen),
-                                                       isPreview: isPreview)
+                                                       isPreview: isPreview,
+                                                       position: placement.position)
             buttonSpecs = layout.buttons
             blockerRegions = OverlayControls.compactCardRegions(layout.card).map { screenRect(for: $0, on: screen) }
             characterPanels.forEach { $0.orderOut(nil) }
@@ -355,8 +375,30 @@ final class OverlayController {
                width: localTopLeftRect.width, height: localTopLeftRect.height)
     }
 
-    private func preferredScreen() -> NSScreen? {
-        NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+    private func preferredScreen(for placement: ReminderPlacement) -> NSScreen? {
+        let screens = NSScreen.screens
+        // The system's primary display is first in `screens`. `NSScreen.main`
+        // follows keyboard focus and can be a different display.
+        let fallback = screens.first
+        switch placement.screen {
+        case .mouse:
+            return screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? fallback
+        case .main:
+            return fallback
+        case .selected:
+            guard let displayID = placement.displayID,
+                  let selected = screens.first(where: { Self.displayIdentifier(for: $0) == displayID })
+            else { return fallback }
+            return selected
+        }
+    }
+
+    private static func displayIdentifier(for screen: NSScreen) -> String? {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let uuid = CGDisplayCreateUUIDFromDisplayID(CGDirectDisplayID(number.uint32Value))
+        else { return nil }
+        guard let value = CFUUIDCreateString(kCFAllocatorDefault, uuid.takeRetainedValue()) else { return nil }
+        return value as String
     }
 
     private func topInset(for screen: NSScreen) -> Double {

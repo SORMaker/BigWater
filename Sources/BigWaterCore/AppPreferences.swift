@@ -1,25 +1,96 @@
 import Foundation
 
-/// A same-day local-time window. `endMinutes == 1_440` means midnight at the
-/// end of the selected day.
-public struct DailyHours: Codable, Equatable {
+/// One same-day local-time period. `endMinutes == 1_440` means midnight at
+/// the end of the selected day.
+public struct ReminderPeriod: Codable, Equatable {
     public var startMinutes: Int
     public var endMinutes: Int
 
-    public init(startMinutes: Int = 360, endMinutes: Int = 1320) {
+    public init(startMinutes: Int, endMinutes: Int) {
         self.startMinutes = startMinutes
         self.endMinutes = endMinutes
     }
+}
+
+/// Ordered same-day local-time periods. The old single-window initializer and
+/// outer-bound accessors remain available to existing callers.
+public struct DailyHours: Codable, Equatable {
+    public var periods: [ReminderPeriod]
+
+    private enum CodingKeys: String, CodingKey {
+        case periods
+        case startMinutes
+        case endMinutes
+    }
+
+    public init(startMinutes: Int = 360, endMinutes: Int = 1320) {
+        periods = [ReminderPeriod(startMinutes: startMinutes, endMinutes: endMinutes)]
+    }
+
+    public init(periods: [ReminderPeriod]) {
+        self.periods = periods
+    }
+
+    /// The first period's start, retained for callers that edit a single window.
+    public var startMinutes: Int {
+        get { periods.first?.startMinutes ?? 0 }
+        set {
+            guard !periods.isEmpty else {
+                periods = [ReminderPeriod(startMinutes: newValue, endMinutes: 1_440)]
+                return
+            }
+            periods[0].startMinutes = newValue
+        }
+    }
+
+    /// The last period's end, retained for callers that edit a single window.
+    public var endMinutes: Int {
+        get { periods.last?.endMinutes ?? 0 }
+        set {
+            guard !periods.isEmpty else {
+                periods = [ReminderPeriod(startMinutes: 0, endMinutes: newValue)]
+                return
+            }
+            periods[periods.count - 1].endMinutes = newValue
+        }
+    }
 
     public var isValid: Bool {
-        startMinutes >= 0 && startMinutes < endMinutes && endMinutes <= 1_440
+        guard !periods.isEmpty else { return false }
+        var previousEnd = -1
+        for period in periods {
+            guard period.startMinutes >= 0,
+                  period.startMinutes < period.endMinutes,
+                  period.endMinutes <= 1_440,
+                  period.startMinutes >= previousEnd
+            else { return false }
+            previousEnd = period.endMinutes
+        }
+        return true
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        let defaults = DailyHours()
-        startMinutes = values.lenientValue(Int.self, forKey: .startMinutes) ?? defaults.startMinutes
-        endMinutes = values.lenientValue(Int.self, forKey: .endMinutes) ?? defaults.endMinutes
+        if let periods = values.lenientValue([ReminderPeriod].self, forKey: .periods) {
+            self.periods = periods
+        } else {
+            let defaults = DailyHours()
+            let start = values.lenientValue(Int.self, forKey: .startMinutes) ?? defaults.startMinutes
+            let end = values.lenientValue(Int.self, forKey: .endMinutes) ?? defaults.endMinutes
+            periods = [ReminderPeriod(startMinutes: start, endMinutes: end)]
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        if periods.count == 1 {
+            try values.encode(periods[0].startMinutes, forKey: .startMinutes)
+            try values.encode(periods[0].endMinutes, forKey: .endMinutes)
+        } else {
+            try values.encode(periods, forKey: .periods)
+            try values.encode(startMinutes, forKey: .startMinutes)
+            try values.encode(endMinutes, forKey: .endMinutes)
+        }
     }
 }
 
@@ -37,6 +108,43 @@ public enum ReminderTheme: String, Codable, CaseIterable {
     case blue
     case mint
     case peach
+}
+
+/// Where a reminder appears. A selected display is remembered by its stable
+/// display UUID so reconnecting a monitor restores the user's choice.
+public enum ReminderPosition: String, Codable, CaseIterable, Hashable {
+    case random
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+}
+
+public enum ReminderScreen: String, Codable, CaseIterable, Hashable {
+    case mouse
+    case main
+    case selected
+}
+
+public struct ReminderPlacement: Codable, Equatable {
+    public var position: ReminderPosition
+    public var screen: ReminderScreen
+    public var displayID: String?
+
+    public init(position: ReminderPosition = .random, screen: ReminderScreen = .mouse,
+                displayID: String? = nil) {
+        self.position = position
+        self.screen = screen
+        self.displayID = displayID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = ReminderPlacement()
+        position = values.lenientValue(ReminderPosition.self, forKey: .position) ?? defaults.position
+        screen = values.lenientValue(ReminderScreen.self, forKey: .screen) ?? defaults.screen
+        displayID = values.lenientValue(String.self, forKey: .displayID)
+    }
 }
 
 public struct ReminderAppearance: Codable, Equatable {
@@ -65,6 +173,8 @@ public struct AppPreferences: Codable, Equatable {
     public var style: ReminderStyle = .animated
     public var soundEnabled: Bool = false
     public var appearance: ReminderAppearance = .init()
+    public var placement: ReminderPlacement = .init()
+    public var showMenuBarCountdown: Bool = false
 
     public init() {}
 
@@ -79,6 +189,9 @@ public struct AppPreferences: Codable, Equatable {
         style = values.lenientValue(ReminderStyle.self, forKey: .style) ?? defaults.style
         soundEnabled = values.lenientValue(Bool.self, forKey: .soundEnabled) ?? defaults.soundEnabled
         appearance = values.lenientValue(ReminderAppearance.self, forKey: .appearance) ?? defaults.appearance
+        placement = values.lenientValue(ReminderPlacement.self, forKey: .placement) ?? defaults.placement
+        showMenuBarCountdown = values.lenientValue(Bool.self, forKey: .showMenuBarCountdown)
+            ?? defaults.showMenuBarCountdown
     }
 
     public func validated() -> AppPreferences {

@@ -15,6 +15,12 @@ final class SettingsModel: ObservableObject {
     @Published var isVisible = false
     @Published var canPreview = true
     @Published var todayDrinkTimes: [Date] = []
+    @Published var history = HydrationHistory()
+    @Published var currentDate = Date()
+    @Published var canRecordDrink = true
+    @Published var canUndoDrink = false
+    @Published var displays: [ReminderDisplay] = []
+    @Published var menuBarStatus = MenuBarStatus(schedule: ReminderSchedule(), canPresentReminder: true)
     @Published var validationText: String?
     @Published var launchAtLogin = false
     @Published var loginNeedsApproval = false
@@ -22,6 +28,11 @@ final class SettingsModel: ObservableObject {
     var onPreferencesChange: ((AppPreferences) -> Void)?
     var onPause: ((Int) -> Void)?
     var onDrink: (() -> Void)?
+    var onUndoDrink: (() -> Void)?
+    var onRemoveDrink: ((Date) -> Void)?
+    var onAddDrink: ((Date) -> Bool)?
+    var onEditDrink: ((Date, Date) -> Bool)?
+    var onHistoryReferenceDate: (() -> Date)?
     var onSnooze: ((Int) -> Void)?
     var onResume: (() -> Void)?
     var onPreview: (() -> Void)?
@@ -45,7 +56,7 @@ final class SettingsModel: ObservableObject {
         edit(&candidate)
         guard candidate.weekdayHours.isValid,
               candidate.weekendHours?.isValid != false else {
-            validationText = "结束时间需要晚于开始时间。"
+            validationText = "结束时间需要晚于开始时间，且各时段不能重叠。"
             return
         }
         validationText = nil
@@ -59,22 +70,6 @@ final class SettingsModel: ObservableObject {
         let seconds = Int(ceil(value))
         return String(format: "%02d:%02d:%02d", seconds / 3_600, (seconds % 3_600) / 60, seconds % 60)
     }
-
-    func timeDate(minutes: Int) -> Date {
-        let calendar = Calendar.autoupdatingCurrent
-        return calendar.date(bySettingHour: (minutes / 60) % 24, minute: minutes % 60, second: 0, of: Date())
-            ?? calendar.startOfDay(for: Date())
-    }
-
-    func minutes(from date: Date, isEnd: Bool) -> Int {
-        let values = Calendar.autoupdatingCurrent.dateComponents([.hour, .minute], from: date)
-        let result = (values.hour ?? 0) * 60 + (values.minute ?? 0)
-        return isEnd && result == 0 ? 1_440 : result
-    }
-
-    static func timeText(_ minutes: Int) -> String {
-        String(format: "%02d:%02d", minutes / 60, minutes % 60)
-    }
 }
 
 struct SettingsView: View {
@@ -82,45 +77,64 @@ struct SettingsView: View {
     @ObservedObject var model: SettingsModel
     @ObservedObject var updater: AppUpdater
     @State private var showingMoreSettings = false
+    @State private var showingHistory = false
+    @State private var showingHours = false
     @State private var pauseMinutes = "30"
+    @State private var draftWeekdayHours = DailyHours()
+    @State private var draftWeekendHours: DailyHours?
+    @State private var hoursEditMessage: String?
     private let ink = Color(nsColor: WaterPalette.ink)
     private let clay = Color(nsColor: WaterPalette.clay)
     private let cream = Color(nsColor: WaterPalette.cream)
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if showingMoreSettings {
-                    moreSettings
-                } else {
-                    header
-                    countdownCard
-                    if model.isAwaitingAcknowledgment { reminderActions }
-                    VStack(alignment: .leading, spacing: 12) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if showingHistory {
+                        historyPage
+                    } else if showingHours {
+                        hoursPage
+                    } else if showingMoreSettings {
+                        moreSettings
+                    } else {
+                        header
+                        countdownCard
+                        reminderActions
                         intervalRow
-                        pauseControls
+                        VStack(alignment: .leading, spacing: 16) {
+                            historyOptions
+                            hoursOptions
+                        }
+                        .padding(12)
+                        .background(.white.opacity(0.45))
+                        .overlay(Rectangle().stroke(ink.opacity(0.08), lineWidth: 1))
+                        appOptions
                     }
-                    Divider()
-                    VStack(alignment: .leading, spacing: 16) {
-                        historyOptions
-                        hoursOptions
-                    }
-                    Divider()
-                    appOptions
                 }
+                .font(.system(size: 13))
+                // Follow the visible width when expanded sections need a scroll bar.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+                .id("settingsTop")
             }
-            .font(.system(size: 12))
-            // Follow the visible width: a scroll bar appears once an expanded
-            // section overflows, and fixed-width content would jump sideways.
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(22)
+            .onChange(of: model.isVisible) { visible in
+                if visible { proxy.scrollTo("settingsTop", anchor: .top) }
+                else { showingMoreSettings = false; showingHistory = false; showingHours = false }
+            }
+            .onChange(of: showingMoreSettings) { _ in
+                proxy.scrollTo("settingsTop", anchor: .top)
+            }
+            .onChange(of: showingHistory) { _ in
+                proxy.scrollTo("settingsTop", anchor: .top)
+            }
+            .onChange(of: showingHours) { _ in
+                proxy.scrollTo("settingsTop", anchor: .top)
+            }
         }
         .frame(width: Self.preferredSize.width, height: Self.preferredSize.height)
         .background(cream)
         .foregroundStyle(ink)
-        .onChange(of: model.isVisible) { visible in
-            if !visible { showingMoreSettings = false }
-        }
     }
 
     private var header: some View {
@@ -128,10 +142,7 @@ struct SettingsView: View {
             Image(nsImage: PixelArt.settingsBottle())
                 .resizable().interpolation(.none).scaledToFit().frame(width: 30, height: 54)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Big Water").font(.system(size: 25, weight: .semibold, design: .serif))
-                Text("喝口水，再继续。").foregroundStyle(ink.opacity(0.6))
-            }
+            Text("Big Water").font(.system(size: 25, weight: .semibold, design: .serif))
             Spacer(minLength: 0)
             Button { showingMoreSettings = true } label: {
                 Image(systemName: "gearshape")
@@ -154,14 +165,29 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         Text("更多设置").font(.system(size: 20, weight: .semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            Text("暂停提醒").fontWeight(.medium)
+            pauseControls
+        }
+        Divider()
         reminderOptions
+        Divider()
+        VStack(alignment: .leading, spacing: 10) {
+            Text("菜单栏").fontWeight(.medium)
+            Toggle("显示剩余分钟", isOn: preferenceBinding(\.showMenuBarCountdown))
+                .toggleStyle(.switch).controlSize(.small)
+            Text("可在水瓶旁显示剩余分钟、暂停或待确认等状态。")
+                .font(.caption).foregroundStyle(ink.opacity(0.55))
+        }
+        Divider()
+        placementOptions
         Divider()
         appearanceOptions
     }
 
     private var countdownCard: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text(model.stateTitle).font(.system(size: 11, weight: .medium))
+            Text(model.stateTitle).fontWeight(.medium)
             if model.isVisible {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     countdownNumber(at: context.date)
@@ -169,13 +195,12 @@ struct SettingsView: View {
             } else {
                 countdownNumber(at: Date())
             }
-            Text(model.scheduleText).font(.system(size: 11)).foregroundStyle(ink.opacity(0.65))
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.58))
-        .overlay(Rectangle().stroke(ink.opacity(0.14), lineWidth: 1))
+        .background(.white.opacity(0.78))
+        .overlay(alignment: .top) { Rectangle().fill(clay.opacity(0.65)).frame(height: 3) }
+        .overlay(Rectangle().stroke(ink.opacity(0.10), lineWidth: 1))
     }
 
     private func countdownNumber(at now: Date) -> some View {
@@ -208,14 +233,27 @@ struct SettingsView: View {
     /// The same actions as the on-screen reminder, reachable from the
     /// keyboard, VoiceOver, or when the reminder is on another display.
     private var reminderActions: some View {
-        HStack(spacing: 8) {
-            Button("我刚喝过水") { model.onDrink?() }
-                .buttonStyle(.borderedProminent).tint(clay)
-            Button("10 分钟后") { model.onSnooze?(10) }
-            Button("20 分钟后") { model.onSnooze?(20) }
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button("我刚喝过水") { model.onDrink?() }
+                    .buttonStyle(.borderedProminent).tint(clay)
+                    .disabled(!model.canRecordDrink)
+                if model.canUndoDrink {
+                    Button("撤销刚才") { model.onUndoDrink?() }
+                        .buttonStyle(.plain)
+                        .help("撤销刚才的喝水记录")
+                        .accessibilityLabel("撤销刚才的喝水记录")
+                }
+                Spacer(minLength: 0)
+            }
+            if model.isAwaitingAcknowledgment {
+                HStack(spacing: 8) {
+                    Button("10 分钟后") { model.onSnooze?(10) }
+                    Button("20 分钟后") { model.onSnooze?(20) }
+                }
+            }
         }
-        .controlSize(.small)
+        .controlSize(.regular)
     }
 
     private var pauseControls: some View {
@@ -236,7 +274,7 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
         }
-        .controlSize(.small)
+        .controlSize(.regular)
     }
 
     private var pauseDuration: Int? {
@@ -260,55 +298,135 @@ struct SettingsView: View {
                 .pickerStyle(.segmented).labelsHidden()
                 Toggle("提醒时播放声音", isOn: preferenceBinding(\.soundEnabled))
                     .toggleStyle(.switch).controlSize(.small)
-                Text(model.preferences.style == .animated
-                     ? "点角色或“我刚喝过水”都会记录一次，同一次提醒只记一次。"
-                     : "喝水后确认，忙时可选择稍后再提醒。")
-                    .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private var hoursOptions: some View {
-        DisclosureGroup("作息时间") {
-            VStack(alignment: .leading, spacing: 12) {
-                hoursRow(weekend: false)
-                Toggle("周末使用单独作息", isOn: Binding(
-                    get: { model.preferences.weekendHours != nil },
-                    set: { enabled in model.change { $0.weekendHours = enabled ? $0.weekdayHours : nil } }
-                ))
-                .toggleStyle(.switch).controlSize(.small)
-                if model.preferences.weekendHours != nil { hoursRow(weekend: true) }
-                if let text = model.validationText {
-                    Text(text).foregroundStyle(clay).font(.system(size: 11))
-                }
-                Text("跟随电脑本地时间。结束设为 00:00 表示当天 24:00。")
-                    .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-                    .fixedSize(horizontal: false, vertical: true)
+        Button { showingHours = true } label: {
+            HStack {
+                Text("作息时间")
+                Spacer()
+                Text(hoursSummary)
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(ink.opacity(0.6))
+                Image(systemName: "chevron.right").font(.caption)
             }
-            .padding(.top, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var hoursSummary: String {
+        let weekday = model.preferences.weekdayHours
+        let hours = Calendar.autoupdatingCurrent.isDateInWeekend(model.currentDate)
+            ? (model.preferences.weekendHours ?? weekday) : weekday
+        if hours.periods.count > 2 { return "\(hours.periods.count) 个时段" }
+        return hours.periods.map {
+            String(format: "%02d:%02d–%02d:%02d", $0.startMinutes / 60, $0.startMinutes % 60,
+                   $0.endMinutes / 60, $0.endMinutes % 60)
+        }.joined(separator: " / ")
+    }
+
+    private var hoursPage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button { showingHours = false } label: {
+                Label("返回", systemImage: "chevron.left").contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Text("作息时间").font(.system(size: 20, weight: .semibold))
+            Text("时段之间暂停计时，下一时段接着剩余时间继续。")
+                .font(.caption).foregroundStyle(ink.opacity(0.6))
+            hoursRow(weekend: false)
+            Toggle("周末使用单独作息", isOn: Binding(
+                get: { draftWeekendHours != nil },
+                set: { draftWeekendHours = $0 ? draftWeekdayHours : nil }
+            ))
+            .toggleStyle(.switch).controlSize(.small)
+            if draftWeekendHours != nil { hoursRow(weekend: true) }
+            if let error = hoursDraftError ?? hoursEditMessage {
+                Text(error).font(.caption).foregroundStyle(clay)
+            }
+            Button("保存作息", action: saveHours)
+                .buttonStyle(.borderedProminent).tint(clay)
+                .disabled(hoursDraftError != nil)
+        }
+        .onAppear {
+            draftWeekdayHours = model.preferences.weekdayHours
+            draftWeekendHours = model.preferences.weekendHours
+            hoursEditMessage = nil
         }
     }
 
     private func hoursRow(weekend: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(weekend ? "周末" : (model.preferences.weekendHours == nil ? "每天" : "工作日"))
-                .font(.system(size: 11)).foregroundStyle(ink.opacity(0.6))
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("开始").font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-                    DatePicker("开始", selection: hoursBinding(weekend: weekend, isEnd: false), displayedComponents: .hourAndMinute)
-                        .labelsHidden().accessibilityLabel(weekend ? "周末开始时间" : "工作日开始时间")
+        let hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(weekend ? "周末" : (draftWeekendHours == nil ? "每天" : "工作日"))
+                .fontWeight(.medium)
+            ForEach(hours.periods.indices, id: \.self) { index in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("时段 \(index + 1)").font(.caption).foregroundStyle(ink.opacity(0.6))
+                        Spacer()
+                        if hours.periods.count > 1 {
+                            Button { removePeriod(weekend: weekend, index: index) } label: {
+                                Image(systemName: "trash").frame(width: 24, height: 20)
+                            }
+                            .buttonStyle(.plain).foregroundStyle(ink.opacity(0.5))
+                            .accessibilityLabel("删除\(weekend ? "周末" : "平日")时段 \(index + 1)")
+                        }
+                    }
+                    timePicker(weekend: weekend, index: index, isEnd: false)
+                    timePicker(weekend: weekend, index: index, isEnd: true)
                 }
-                Text("至").foregroundStyle(ink.opacity(0.5))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("结束").font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-                    DatePicker("结束", selection: hoursBinding(weekend: weekend, isEnd: true), displayedComponents: .hourAndMinute)
-                        .labelsHidden().accessibilityLabel(weekend ? "周末结束时间" : "工作日结束时间")
+                .padding(12).background(.white.opacity(0.6))
+                .overlay(Rectangle().stroke(ink.opacity(0.1), lineWidth: 1))
+            }
+            Button { addPeriod(weekend: weekend) } label: {
+                Label("添加时段", systemImage: "plus")
+            }
+            .buttonStyle(.plain).foregroundStyle(clay)
+        }
+    }
+
+    private func timePicker(weekend: Bool, index: Int, isEnd: Bool) -> some View {
+        let time = hoursBinding(weekend: weekend, index: index, isEnd: isEnd)
+        let period = (weekend ? "周末" : (draftWeekendHours == nil ? "每天" : "工作日")) + "时段 \(index + 1)"
+        let label = isEnd ? "结束" : "开始"
+        let hour = time.wrappedValue / 60
+        let minute = time.wrappedValue % 60
+        return HStack(spacing: 8) {
+            Text(label)
+            Spacer(minLength: 8)
+            Picker("\(period)\(label)小时", selection: Binding(
+                get: { time.wrappedValue / 60 },
+                set: { time.wrappedValue = $0 == 24 ? 1_440 : $0 * 60 + time.wrappedValue % 60 }
+            )) {
+                ForEach(0..<(isEnd ? 25 : 24), id: \.self) { hour in
+                    Text(String(format: "%02d", hour)).tag(hour)
                 }
             }
-            .datePickerStyle(.field).controlSize(.small)
+            .frame(width: 72)
+            Text(":")
+            Picker("\(period)\(label)分钟", selection: Binding(
+                get: { time.wrappedValue % 60 },
+                set: { time.wrappedValue = (time.wrappedValue / 60) * 60 + $0 }
+            )) {
+                // Display an existing custom minute until the user chooses a half hour.
+                if minute != 0 && minute != 30 {
+                    Text(String(format: "%02d", minute)).tag(minute).disabled(true)
+                }
+                Text("00").tag(0)
+                Text("30").tag(30)
+            }
+            .frame(width: 72)
+            .disabled(hour == 24)
         }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .monospacedDigit()
+        .controlSize(.regular)
     }
 
     private var appearanceOptions: some View {
@@ -326,30 +444,77 @@ struct SettingsView: View {
                 }.pickerStyle(.segmented)
                 Button("预览当前效果") { model.onPreview?() }
                     .disabled(!model.canPreview)
-                Text("预览不计入喝水记录，也不重置计时。")
-                    .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
             }
         }
     }
 
-    private var historyOptions: some View {
-        DisclosureGroup("今日记录") {
-            VStack(alignment: .leading, spacing: 8) {
-                if model.todayDrinkTimes.isEmpty {
-                    Text("喝水后点提醒里的按钮，这里会记录时间。")
-                } else {
-                    Text(model.todayDrinkTimes.map {
-                        $0.formatted(date: .omitted, time: .shortened)
-                    }.joined(separator: "  ·  "))
-                    .monospacedDigit()
-                }
-                Text("只保存在这台电脑，不估算饮水量。")
-                    .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
+    private var placementOptions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("提醒位置").fontWeight(.medium)
+            Picker("出场位置", selection: placementBinding(\.position)) {
+                Text("随机出场").tag(ReminderPosition.random)
+                Text("左上角").tag(ReminderPosition.topLeft)
+                Text("右上角").tag(ReminderPosition.topRight)
+                Text("左下角").tag(ReminderPosition.bottomLeft)
+                Text("右下角").tag(ReminderPosition.bottomRight)
             }
-            .font(.system(size: 11))
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 10)
+            Picker("显示屏幕", selection: placementBinding(\.screen)) {
+                Text("鼠标所在屏幕").tag(ReminderScreen.mouse)
+                Text("主屏幕").tag(ReminderScreen.main)
+                Text("指定屏幕").tag(ReminderScreen.selected)
+            }
+            if model.preferences.placement.screen == .selected {
+                Picker("指定屏幕", selection: Binding(
+                    get: { model.preferences.placement.displayID ?? "" },
+                    set: { value in model.change { $0.placement.displayID = value.isEmpty ? nil : value } }
+                )) {
+                    Text("请选择屏幕").tag("")
+                    ForEach(model.displays) { display in Text(display.name).tag(display.id) }
+                    if let saved = model.preferences.placement.displayID,
+                       !model.displays.contains(where: { $0.id == saved }) {
+                        Text("已保存的屏幕（未连接）").tag(saved)
+                    }
+                }
+                if model.preferences.placement.displayID == nil
+                    || !model.displays.contains(where: { $0.id == model.preferences.placement.displayID }) {
+                    Text("屏幕未连接时，暂时在主屏幕提醒。")
+                        .font(.caption).foregroundStyle(ink.opacity(0.6))
+                }
+            }
         }
+        .pickerStyle(.menu)
+    }
+
+    private func placementBinding<T>(_ keyPath: WritableKeyPath<ReminderPlacement, T>) -> Binding<T> {
+        Binding(get: { model.preferences.placement[keyPath: keyPath] },
+                set: { value in model.change { $0.placement[keyPath: keyPath] = value } })
+    }
+
+    private var historyOptions: some View {
+        Button { showingHistory = true } label: {
+            HStack {
+                Text("喝水记录")
+                Spacer()
+                Text("今天 \(model.todayDrinkTimes.count) 次").foregroundStyle(ink.opacity(0.6))
+                Image(systemName: "chevron.right").font(.caption)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var historyPage: some View {
+        Button { showingHistory = false } label: {
+            Label("返回", systemImage: "chevron.left").contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        Text("喝水记录").font(.system(size: 20, weight: .semibold))
+        HydrationHistoryView(history: model.history, today: model.currentDate,
+                             onRemove: { model.onRemoveDrink?($0) },
+                             onAdd: { model.onAddDrink?($0) ?? false },
+                             onEdit: { model.onEditDrink?($0, $1) ?? false },
+                             referenceDate: { model.onHistoryReferenceDate?() ?? model.currentDate })
     }
 
     private var appOptions: some View {
@@ -412,7 +577,7 @@ struct SettingsView: View {
             .disabled(!updater.canCheckForUpdates)
             .help(updater.statusText ?? "检查是否有新版本")
         }
-        .controlSize(.small)
+        .controlSize(.regular)
     }
 
     private func preferenceBinding<T>(_ keyPath: WritableKeyPath<AppPreferences, T>) -> Binding<T> {
@@ -427,18 +592,65 @@ struct SettingsView: View {
         })
     }
 
-    private func hoursBinding(weekend: Bool, isEnd: Bool) -> Binding<Date> {
+    private func hoursBinding(weekend: Bool, index: Int, isEnd: Bool) -> Binding<Int> {
         Binding(get: {
-            let hours = weekend ? (model.preferences.weekendHours ?? model.preferences.weekdayHours) : model.preferences.weekdayHours
-            return model.timeDate(minutes: isEnd ? hours.endMinutes : hours.startMinutes)
-        }, set: { value in
-            let minutes = model.minutes(from: value, isEnd: isEnd)
-            model.change { preferences in
-                var hours = weekend ? (preferences.weekendHours ?? preferences.weekdayHours) : preferences.weekdayHours
-                if isEnd { hours.endMinutes = minutes } else { hours.startMinutes = minutes }
-                if weekend { preferences.weekendHours = hours } else { preferences.weekdayHours = hours }
-            }
+            let hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+            guard hours.periods.indices.contains(index) else { return 0 }
+            return isEnd ? hours.periods[index].endMinutes : hours.periods[index].startMinutes
+        }, set: { minutes in
+            var hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+            guard hours.periods.indices.contains(index) else { return }
+            if isEnd { hours.periods[index].endMinutes = minutes }
+            else { hours.periods[index].startMinutes = minutes }
+            if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
+            hoursEditMessage = nil
         })
+    }
+
+    private func sortedHours(_ hours: DailyHours) -> DailyHours {
+        DailyHours(periods: hours.periods.sorted { $0.startMinutes < $1.startMinutes })
+    }
+
+    private var hoursDraftError: String? {
+        guard sortedHours(draftWeekdayHours).isValid,
+              draftWeekendHours.map({ sortedHours($0).isValid }) != false else {
+            return "结束时间需要晚于开始时间，且各时段不能重叠。"
+        }
+        return nil
+    }
+
+    private func saveHours() {
+        guard hoursDraftError == nil else { return }
+        model.change {
+            $0.weekdayHours = sortedHours(draftWeekdayHours)
+            $0.weekendHours = draftWeekendHours.map(sortedHours)
+        }
+        if model.validationText == nil { showingHours = false }
+    }
+
+    private func removePeriod(weekend: Bool, index: Int) {
+        var hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+        guard hours.periods.count > 1, hours.periods.indices.contains(index) else { return }
+        hours.periods.remove(at: index)
+        if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
+        hoursEditMessage = nil
+    }
+
+    private func addPeriod(weekend: Bool) {
+        var hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+        let sorted = sortedHours(hours).periods
+        let endpoints = [0] + sorted.map(\.endMinutes)
+        let starts = sorted.map(\.startMinutes) + [1_440]
+        let gaps = zip(endpoints, starts).filter { $0.1 - $0.0 >= 30 }
+        let following = gaps.last(where: { $0.0 >= (sorted.last?.endMinutes ?? 0) })
+        guard let gap = following ?? gaps.first else {
+            hoursEditMessage = "没有空余时间，请先缩短一个现有时段。"
+            return
+        }
+        let start = gap.0 + (gap.1 - gap.0 >= 60 && gap.0 != 0 ? 30 : 0)
+        hours.periods.append(ReminderPeriod(startMinutes: start, endMinutes: min(start + 120, gap.1)))
+        if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
+        hoursEditMessage = nil
     }
 
     private func intervalButton(_ symbol: String, label: String, disabled: Bool,

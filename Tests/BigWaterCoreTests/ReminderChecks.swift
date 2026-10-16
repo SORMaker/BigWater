@@ -601,6 +601,77 @@ struct ReminderChecks {
         try expect(scene.bottles.isEmpty && scene.particles.isEmpty, "Animation objects leaked after departure")
     }
 
+    func spontaneousDrinksRestartWithoutCancellingPause() throws {
+        var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
+        schedule.recordDrink(at: now.addingTimeInterval(1_800), uptime: 1_800, calendar: calendar)
+        try expect(schedule.remainingTime == 7_200 && schedule.nextReminderAt == now.addingTimeInterval(9_000),
+                   "An early drink did not start a full interval")
+        schedule.reminderDidStart()
+        schedule.snooze(minutes: 10, at: now.addingTimeInterval(1_800), uptime: 1_800, calendar: calendar)
+        schedule.recordDrink(at: now.addingTimeInterval(1_860), uptime: 1_860, calendar: calendar)
+        try expect(!schedule.isSnoozed && !schedule.isAwaitingAcknowledgment && schedule.remainingTime == 7_200,
+                   "An early drink retained the short snooze interval")
+        schedule.pause(for: 30, at: now.addingTimeInterval(1_860), uptime: 1_860, calendar: calendar)
+        let pause = schedule.pausedUntil
+        schedule.recordDrink(at: now.addingTimeInterval(1_920), uptime: 1_920, calendar: calendar)
+        try expect(schedule.isManuallyPaused && schedule.pausedUntil == pause && schedule.remainingTime == 7_200,
+                   "Recording a drink cancelled an intentional pause")
+        schedule.recordDrink(at: date(15, 23), uptime: 50_400, calendar: calendar)
+        try expect(!schedule.isCounting && schedule.nextReminderAt == nil,
+                   "A drink outside reminder hours started a night countdown")
+    }
+
+    func historyRemovesOneSelectedConfirmation() throws {
+        var history = HydrationHistory()
+        history.recordDrink(at: now)
+        history.recordDrink(at: now)
+        let later = now.addingTimeInterval(60)
+        history.recordDrink(at: later)
+        try expect(history.removeDrink(at: now) && history.drinks == [now, later],
+                   "Removing one confirmation deleted duplicate timestamps together")
+        try expect(!history.removeDrink(at: now.addingTimeInterval(30)) && history.drinks == [now, later],
+                   "Removing a missing entry changed other confirmations")
+        let saved = try JSONEncoder().encode(history)
+        let loaded = try JSONDecoder().decode(HydrationHistory.self, from: saved)
+        try expect(loaded.drinks == [now, later], "A deletion did not survive history serialization")
+    }
+
+    func monthHeatmapUsesCompleteCalendarDays() throws {
+        let october = HydrationMonth(containing: now, calendar: calendar)
+        let octoberDays = october.weeks.flatMap { $0 }.compactMap { $0 }
+        try expect(october.weeks.count == 5 && october.weeks.allSatisfy { $0.count == 7 }
+                   && octoberDays.count == 31 && Set(octoberDays).count == 31,
+                   "A month omitted or duplicated days")
+        try expect(october.weeks[0].prefix(3).allSatisfy { $0 == nil }
+                   && calendar.component(.day, from: october.weeks[0][3]!) == 1,
+                   "Heatmap weeks do not start on Monday")
+        let leapDate = calendar.date(from: DateComponents(year: 2024, month: 2, day: 15))!
+        let leap = HydrationMonth(containing: leapDate, calendar: calendar)
+        try expect(leap.weeks.flatMap { $0 }.compactMap { $0 }.count == 29,
+                   "The heatmap lost February 29")
+        var newYork = calendar
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+        let dstDate = newYork.date(from: DateComponents(year: 2026, month: 3, day: 15))!
+        let dstDays = HydrationMonth(containing: dstDate, calendar: newYork).weeks.flatMap { $0 }.compactMap { $0 }
+        try expect(dstDays.count == 31 && dstDays.allSatisfy { newYork.component(.hour, from: $0) == 0 },
+                   "DST shifted a contribution cell away from the start of its local day")
+    }
+
+    func clockRollbackKeepsSavedMonthsReachable() throws {
+        var history = HydrationHistory()
+        let recorded = calendar.date(from: DateComponents(year: 2026, month: 11, day: 2, hour: 9))!
+        history.recordDrink(at: recorded)
+        let latest = HydrationMonth.latestAvailableMonth(history: history, today: now, calendar: calendar)
+        try expect(latest == calendar.date(from: DateComponents(year: 2026, month: 11, day: 1)),
+                   "Clock rollback hid a saved future month")
+        try expect(history.count(on: recorded, calendar: calendar) == 1,
+                   "A recorded future day lost its confirmations")
+        history.removeDrink(at: recorded)
+        try expect(HydrationMonth.latestAvailableMonth(history: history, today: now, calendar: calendar)
+                   == calendar.date(from: DateComponents(year: 2026, month: 10, day: 1)),
+                   "Deleting the future mistake kept an empty future month open")
+    }
+
     func earlyClickDuringDescent() throws {
         var scene = ReminderScene(viewport: CGSize(width: 900, height: 600))
         scene.advance(by: 0.3)
@@ -663,7 +734,7 @@ struct ReminderChecks {
 enum BigWaterChecks {
     static func main() {
         let suite = ReminderChecks()
-        let checks: [(String, () throws -> Void)] = [
+        let allChecks: [(String, () throws -> Void)] = [
             ("two-hour default", suite.twoHourDefault),
             ("sleep and duplicate notifications preserve remaining time", suite.sleepPreservesRemainingTime),
             ("overnight reset starts at first morning use", suite.overnightStartsAtFirstMorningUse),
@@ -688,6 +759,10 @@ enum BigWaterChecks {
             ("stored history keeps readable drinks", suite.storedHistoryKeepsReadableDrinks),
             ("interval edits keep counted use", suite.intervalEditsKeepCountedUse),
             ("history keeps recent days in order", suite.historyKeepsRecentDaysInOrder),
+            ("early drinks replace countdowns while preserving pauses", suite.spontaneousDrinksRestartWithoutCancellingPause),
+            ("one selected drink can be removed and saved", suite.historyRemovesOneSelectedConfirmation),
+            ("monthly heatmap handles weekdays, leap days and DST", suite.monthHeatmapUsesCompleteCalendarDays),
+            ("clock rollback keeps recorded months reachable", suite.clockRollbackKeepsSavedMonthsReachable),
             ("only Claude recoils", suite.onlyClaudeRecoils),
             ("weekend follows the locale", suite.weekendFollowsTheLocale),
             ("redraw regions cover every drawn pixel", suite.paintedRegionsCoverEveryDrawnPixel),
@@ -701,7 +776,21 @@ enum BigWaterChecks {
             ("only Claude's visible pixels intercept clicks", suite.hitRegionsExcludeRopeWaterAndTransparentGaps),
             ("descent cannot leak input windows onto another display", suite.descendingHitRegionsStayOnTheirDisplay),
             ("all droplet themes keep animation and input bounded", suite.dropletThemesKeepInputAndAnimationBounded)
-        ]
+        ] + SegmentedScheduleChecks.checks + HistoryCorrectionChecks.checks + MenuBarStatusChecks.checks
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let checks: [(String, () throws -> Void)]
+        if arguments.isEmpty {
+            checks = allChecks
+        } else if arguments.count == 2 && arguments[0] == "--filter" {
+            checks = allChecks.filter { $0.0.localizedCaseInsensitiveContains(arguments[1]) }
+            guard !checks.isEmpty else {
+                fputs("No checks matched the filter.\n", stderr)
+                exit(2)
+            }
+        } else {
+            fputs("Usage: BigWaterChecks [--filter text]\n", stderr)
+            exit(2)
+        }
         var failures = 0
         for (name, run) in checks {
             do { try run(); print("PASS: \(name)") }

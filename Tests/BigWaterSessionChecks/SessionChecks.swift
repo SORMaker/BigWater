@@ -335,9 +335,8 @@ private final class SessionChecks {
                            "Confirmation was not persisted exactly once")
 
                 relaunch(preferences)
-                delegate.settings.onDrink?()
                 try expect(delegate.history.count(on: now) == confirmed && !overlay.isActive,
-                           "Restart lost a confirmation or allowed the same reminder to be counted again")
+                           "Restart lost a confirmation or re-presented an acknowledged reminder")
                 pass("\(style.rawValue) \(characterFirst ? "character" : "button") first: one saved drink per reminder")
             }
 
@@ -350,6 +349,118 @@ private final class SessionChecks {
                        "Clicking the preview character recorded a drink or changed the countdown")
             pass("\(style.rawValue) preview character leaves drink history and countdown unchanged")
         }
+    }
+
+    func spontaneousDrinkAndUndoScenario(_ preferences: UserDefaults) throws {
+        move(to: 28, 9)
+        launch(preferences)
+        move(to: 28, 9, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        delegate.settings.onDrink?()
+        delegate.settings.onDrink?()
+        try expect(delegate.history.drinks.count == 1 && schedule.remainingTime == 7_200,
+                   "An early drink was not recorded once with a full interval")
+        move(to: 28, 9, 40)
+        post(.NSSystemClockDidChange, workspace: false)
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.drinks.isEmpty && schedule.remainingTime == 4_800,
+                   "Undo did not restore the earlier countdown including elapsed use")
+        delegate.settings.onUndoDrink?()
+        try expect(schedule.remainingTime == 4_800, "A repeated undo changed the countdown")
+        pass("spontaneous drinks and double-click-safe undo restore the old countdown")
+
+        delegate.settings.onDrink?()
+        move(to: 28, 9, 50)
+        post(NSWorkspace.screensDidSleepNotification)
+        move(to: 28, 12)
+        post(NSWorkspace.screensDidWakeNotification)
+        move(to: 28, 12, 10)
+        delegate.settings.onUndoDrink?()
+        try expect(schedule.remainingTime == 3_600 && delegate.history.drinks.isEmpty,
+                   "Undo counted screen-off time against the earlier countdown")
+        pass("undo follows the old countdown through screen sleep and wake")
+
+        delegate.settings.onDrink?()
+        delegate.settings.onPause?(30)
+        let paused = schedule.pausedUntil
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.drinks.isEmpty && schedule.isManuallyPaused
+                   && schedule.pausedUntil == paused && schedule.remainingTime == 7_200,
+                   "Undo overwrote a later intentional pause")
+        delegate.settings.onResume?()
+        move(to: 28, 12, 15)
+        delegate.settings.onDrink?()
+        delegate.settings.hours = 1.5
+        let changed = schedule.remainingTime
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.drinks.isEmpty && schedule.intervalHours == 1.5
+                   && schedule.remainingTime == changed,
+                   "Undo overwrote a later interval choice")
+        pass("undo removes a mistake while respecting later pause and interval choices")
+
+        move(to: 28, 12, 20)
+        delegate.settings.onDrink?()
+        let recorded = delegate.history.drinks[0]
+        relaunch(preferences)
+        try expect(delegate.history.drinks == [recorded] && !delegate.settings.canUndoDrink,
+                   "Restart did not preserve the drink or retained an unsafe countdown undo")
+        delegate.settings.onRemoveDrink?(recorded)
+        relaunch(preferences)
+        try expect(delegate.history.drinks.isEmpty, "Deleting a saved mistake did not survive restart")
+        pass("saved records can be deleted after restart without losing other state")
+
+        move(to: 28, 23)
+        delegate.settings.onDrink?()
+        try expect(delegate.history.count(on: now) == 1 && !schedule.isCounting && !overlay.isActive,
+                   "A quiet-hours drink did not record safely")
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.count(on: now) == 0 && !schedule.isCounting,
+                   "Undo outside reminder hours started counting")
+        move(to: 29, 8)
+        post(.NSCalendarDayChanged, workspace: false)
+        move(to: 29, 9, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(overlay.isAwaitingAcknowledgment, "Undo reminder fixture did not become due")
+        overlay.acknowledge()
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.count(on: now) == 0 && schedule.isAwaitingAcknowledgment
+                   && overlay.isAwaitingAcknowledgment,
+                   "Undoing a character confirmation did not restore the waiting reminder")
+        overlay.confirmDrink()
+        try expect(delegate.history.count(on: now) == 1, "A restored reminder could not be confirmed again")
+        pass("quiet-hours records and undone character confirmations preserve reminder behavior")
+    }
+
+    func quickMenuScenario(_ preferences: UserDefaults) throws {
+        move(to: 30, 9)
+        launch(preferences)
+        func perform(_ title: String) throws {
+            let menu = delegate.makeQuickMenu()
+            let index = menu.indexOfItem(withTitle: title)
+            try expect(index >= 0 && menu.item(at: index)?.isEnabled == true,
+                       "Quick-menu action is missing or stale: \(title)")
+            menu.performActionForItem(at: index)
+        }
+        try perform("我刚喝过水")
+        try expect(delegate.history.drinks.count == 1, "Quick record did not reach the shared drink action")
+        try perform("撤销刚才的喝水记录")
+        try expect(delegate.history.drinks.isEmpty, "Quick undo did not remove the drink")
+        let undoneMenu = delegate.makeQuickMenu()
+        try expect(undoneMenu.item(withTitle: "撤销刚才的喝水记录")?.isEnabled == false,
+                   "Quick undo stayed enabled after the record was undone")
+        try perform("暂停 30 分钟")
+        try expect(schedule.isManuallyPaused && schedule.pausedUntil == now.addingTimeInterval(1_800),
+                   "Quick thirty-minute pause used a different duration")
+        try perform("恢复计时")
+        try expect(!schedule.isManuallyPaused, "Quick resume stayed paused")
+        try perform("暂停 60 分钟")
+        try expect(schedule.pausedUntil == now.addingTimeInterval(3_600), "Quick sixty-minute pause used a different duration")
+        pass("native right-click menu dispatches record, undo, pause and resume with live enabled state")
+    }
+
+    func placementScenario(_ preferences: UserDefaults) throws {
+        try runPlacementChecks()
+        pass("placement preferences, corner geometry and real display selection")
     }
 
     /// Saved state written by another build, or damaged.
@@ -533,6 +644,141 @@ private final class SessionChecks {
     }
 
 
+    func featureCorrectionsScenario(_ preferences: UserDefaults) throws {
+        move(to: 16, 9)
+        launch(preferences)
+        move(to: 16, 9, 15)
+        post(.NSSystemClockDidChange, workspace: false)
+        let deadline = schedule.nextReminderAt
+        let remaining = schedule.remainingTime
+        let original = now.addingTimeInterval(-1_800)
+        try expect(delegate.settings.onAddDrink?(original) == true,
+                   "The backfill entry did not reach the history store")
+        try expect(schedule.nextReminderAt == deadline && schedule.remainingTime == remaining,
+                   "Backfilling acknowledged or restarted the live countdown")
+        let replacement = now.addingTimeInterval(-86_400)
+        try expect(delegate.settings.onEditDrink?(original, replacement) == true,
+                   "The timestamp editor did not update its record")
+        try expect(delegate.history.drinks == [replacement] && schedule.nextReminderAt == deadline,
+                   "Editing a timestamp lost the record or changed the reminder")
+        let recorded = delegate.history
+        try expect(delegate.settings.onAddDrink?(now.addingTimeInterval(60)) == false
+                   && delegate.history == recorded, "A future backfill mutated history")
+        delegate.settings.onDrink?()
+        try expect(delegate.settings.canUndoDrink, "The ordinary record did not offer undo")
+        try expect(delegate.settings.onEditDrink?(now, original) == true && !delegate.settings.canUndoDrink,
+                   "Editing the undo target left an unsafe old countdown undo")
+        let correctedHistory = delegate.history
+        let correctedProgress = schedule.remainingTime
+        relaunch(preferences)
+        try expect(delegate.history == correctedHistory && schedule.remainingTime == correctedProgress,
+                   "Corrected times or live progress were lost on reload")
+        pass("feature corrections: backfill and edits save without changing the live clock")
+    }
+
+    func featureSegmentsScenario(_ preferences: UserDefaults) throws {
+        move(to: 17, 11)
+        var configuration = AppPreferences()
+        configuration.weekdayHours = DailyHours(periods: [
+            ReminderPeriod(startMinutes: 9 * 60, endMinutes: 12 * 60),
+            ReminderPeriod(startMinutes: 14 * 60, endMinutes: 18 * 60)
+        ])
+        var initial = ReminderSchedule(now: now, uptime: uptime,
+                                       weekdayHours: configuration.weekdayHours)
+        AppStorage(defaults: preferences).save(preferences: configuration,
+            progress: initial.snapshot(at: now, uptime: uptime), history: HydrationHistory())
+        launch(preferences)
+        move(to: 17, 11, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        // The remaining 90 active minutes are 30 before lunch and 60 after it.
+        try expect(schedule.nextReminderAt == calendar.date(bySettingHour: 15, minute: 0, second: 0, of: now)
+                   && delegate.settings.countdown(at: now) == "01:30:00",
+                   "The active-time countdown incorrectly included the lunch gap")
+        move(to: 17, 12)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!schedule.isCounting && schedule.remainingTime == 3_600
+                   && !overlay.isActive && delegate.settings.menuBarStatus.phase == .resting,
+                   "The lunch boundary did not freeze progress and update menu state")
+        move(to: 17, 12, 30)
+        relaunch(preferences)
+        try expect(schedule.remainingTime == 3_600 && !schedule.isCounting,
+                   "Restart during lunch discarded the saved progress")
+        let lastModelDate = delegate.settings.currentDate
+        move(to: 17, 13)
+        try expect(delegate.settings.currentDate == lastModelDate
+                   && delegate.settings.onHistoryReferenceDate?() == now,
+                   "Opening a history editor during rest did not receive the current time")
+        move(to: 17, 14)
+        post(.NSSystemClockDidChange, workspace: false)
+        delegate.settings.change { $0.showMenuBarCountdown = true }
+        try expect(schedule.remainingTime == 3_600 && schedule.isCounting
+                   && delegate.settings.menuBarStatus.title(showMinutes: true) == "60分",
+                   "The afternoon start did not resume progress or menu minutes")
+        try expect(AppStorage(defaults: preferences).loadPreferences().showMenuBarCountdown
+                   && delegate.configuration.weekdayHours.periods.count == 2,
+                   "Segmented periods or the countdown setting were not stored")
+        pass("feature segments: lunch, reload and menu minutes follow the same saved state")
+    }
+
+    func featurePendingAcrossGapScenario(_ preferences: UserDefaults) throws {
+        try pendingAcrossGap(preferences, clockJump: false)
+    }
+
+    func featurePendingClockJumpScenario(_ preferences: UserDefaults) throws {
+        try pendingAcrossGap(preferences, clockJump: true)
+    }
+
+    func featurePendingSettingsFirstScenario(_ preferences: UserDefaults) throws {
+        try pendingAcrossGap(preferences, clockJump: true, settingsFirst: true)
+    }
+
+    private func pendingAcrossGap(_ preferences: UserDefaults, clockJump: Bool,
+                                  settingsFirst: Bool = false) throws {
+        move(to: 18, 10, 30)
+        var configuration = AppPreferences()
+        configuration.intervalHours = settingsFirst ? 1 : 0.5
+        configuration.style = .compact
+        configuration.weekdayHours = DailyHours(periods: [
+            ReminderPeriod(startMinutes: 9 * 60, endMinutes: 12 * 60),
+            ReminderPeriod(startMinutes: 13 * 60, endMinutes: 18 * 60)
+        ])
+        var initial = ReminderSchedule(hours: configuration.intervalHours, now: now, uptime: uptime,
+                                       weekdayHours: configuration.weekdayHours)
+        AppStorage(defaults: preferences).save(preferences: configuration,
+            progress: initial.snapshot(at: now, uptime: uptime), history: HydrationHistory())
+        launch(preferences)
+        move(to: 18, 11, settingsFirst ? 30 : 0)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(schedule.isAwaitingAcknowledgment && overlay.isAwaitingAcknowledgment,
+                   "The pre-lunch reminder fixture did not start")
+        let oldPanel = overlay.buttonPanels.first
+        try expect(oldPanel != nil, "The reminder fixture had no action panel")
+        move(to: 18, 11, 50)
+        if clockJump {
+            let oldUptime = uptime
+            move(to: 18, 13, 10)
+            uptime = oldUptime + 60
+            if settingsFirst { delegate.settings.hours = 0.5 }
+            else { post(.NSSystemClockDidChange, workspace: false) }
+        } else {
+            post(NSWorkspace.willSleepNotification)
+            move(to: 18, 13, 10)
+            post(NSWorkspace.didWakeNotification)
+        }
+        try expect(schedule.isAwaitingAcknowledgment && overlay.isAwaitingAcknowledgment
+                   && delegate.settings.menuBarStatus.phase == .waiting,
+                   "Skipping the lunch boundary left the old scene detached from the schedule")
+        try expect(overlay.buttonPanels.first !== oldPanel,
+                   "The prior period's action panel survived instead of being re-offered")
+        overlay.confirmDrink()
+        try expect(delegate.history.count(on: now) == 1 && !schedule.isAwaitingAcknowledgment,
+                   "The re-offered reminder did not accept exactly one drink confirmation")
+        overlay.stop()
+        let trigger = settingsFirst ? "a settings action before the clock notification"
+            : (clockJump ? "a clock correction" : "waking")
+        pass("feature segments: a pending reminder re-offers after \(trigger) across a rest gap")
+    }
+
     private(set) var passed = 0
     private(set) var failures: [String] = []
 
@@ -584,13 +830,42 @@ private enum BigWaterSessionChecks {
     static func main() {
         _ = NSApplication.shared
         MainActor.assumeIsolated {
+            if CommandLine.arguments.contains("--ui-preview")
+                || Bundle.main.bundleIdentifier == "com.oil.bigwater.uipreview" {
+                runHistoryPreview()
+                return
+            }
             let checks = SessionChecks()
+            if CommandLine.arguments.contains("--features") {
+                let scenarios: [(String, (UserDefaults) throws -> Void)] = [
+                    ("feature history corrections", checks.featureCorrectionsScenario),
+                    ("feature segmented timing and menu", checks.featureSegmentsScenario),
+                    ("feature pending reminder across rest", checks.featurePendingAcrossGapScenario),
+                    ("feature pending reminder after clock correction", checks.featurePendingClockJumpScenario),
+                    ("feature pending reminder with settings first", checks.featurePendingSettingsFirstScenario)
+                ]
+                let arguments = CommandLine.arguments
+                let filter: String
+                if let index = arguments.firstIndex(of: "--filter") {
+                    guard arguments.indices.contains(index + 1) else { exit(2) }
+                    filter = arguments[index + 1]
+                } else { filter = "" }
+                let selected = scenarios.filter { $0.0.localizedCaseInsensitiveContains(filter) }
+                guard !selected.isEmpty else { exit(2) }
+                for (name, body) in selected { checks.scenario(name, body) }
+                if !checks.failures.isEmpty { exit(1) }
+                print("\(checks.passed) feature session checks passed (no animation scenarios)")
+                return
+            }
             checks.scenario("daily story", checks.dailyStory)
             checks.scenario("saved state from other builds", checks.storageScenario)
             checks.scenario("overlay timing and input", checks.overlayScenario)
             checks.scenario("four screen-edge entrances", checks.directionalOverlayScenario)
             checks.scenario("system state and menu actions", checks.systemScenario)
             checks.scenario("drink confirmation and deduplication", checks.drinkConfirmationScenario)
+            checks.scenario("spontaneous records and undo", checks.spontaneousDrinkAndUndoScenario)
+            checks.scenario("right-click quick menu", checks.quickMenuScenario)
+            checks.scenario("configured placement", checks.placementScenario)
             if checks.failures.isEmpty {
                 print("\(checks.passed) session checks passed")
             } else {

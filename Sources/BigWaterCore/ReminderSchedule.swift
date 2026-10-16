@@ -1,7 +1,7 @@
 import Foundation
 
-/// Counts screen-awake use inside the configured local daily window. A reminder
-/// remains outstanding until acknowledged, snoozed, paused, or the window ends.
+/// Counts screen-awake use inside the configured local daily periods. A reminder
+/// remains outstanding until acknowledged, snoozed, paused, or the day ends.
 public struct ReminderSchedule {
     public static let defaultHours = 2.0
     public static let minimumHours = 0.5
@@ -21,8 +21,8 @@ public struct ReminderSchedule {
 
     private var lastUpdateAt: Date
     private var lastUptime: TimeInterval
-    private var windowEnd: Date
     private var pauseDeadlineUptime: TimeInterval?
+    private var calendar: Calendar
 
     public var isManuallyPaused: Bool { pausedUntil != nil }
 
@@ -35,8 +35,25 @@ public struct ReminderSchedule {
 
     public var nextReminderAt: Date? {
         guard isCounting else { return nil }
-        let due = lastUpdateAt.addingTimeInterval(remainingTime)
-        return due < windowEnd ? due : nil
+        let hours = Self.hours(for: lastUpdateAt, weekday: weekdayHours,
+                               weekend: weekendHours, calendar: calendar)
+        let periods = Self.periodBounds(for: lastUpdateAt, hours: hours, calendar: calendar)
+        var remaining = remainingTime
+
+        for index in periods.indices where periods[index].end > lastUpdateAt {
+            let period = periods[index]
+            let activeStart = max(lastUpdateAt, period.start)
+            let available = period.end.timeIntervalSince(activeStart)
+            if remaining < available {
+                return activeStart.addingTimeInterval(remaining)
+            }
+            if remaining == available {
+                // A due time at a rest-gap edge is delivered when use resumes.
+                return periods.dropFirst(index + 1).first?.start
+            }
+            remaining -= available
+        }
+        return nil
     }
 
     /// Always includes the daily boundary, even while a reminder is on screen.
@@ -57,10 +74,10 @@ public struct ReminderSchedule {
         self.isSessionActive = isSessionActive
         self.weekdayHours = Self.validHours(weekdayHours)
         self.weekendHours = weekendHours.map(Self.validHours)
+        self.calendar = calendar
         localDay = calendar.dateComponents([.era, .year, .month, .day], from: now)
         lastUpdateAt = now
         lastUptime = uptime
-        windowEnd = now
         nextBoundaryAt = now
         pauseDeadlineUptime = nil
 
@@ -80,17 +97,28 @@ public struct ReminderSchedule {
                            calendar: calendar) {
             let currentHours = Self.hours(for: now, weekday: self.weekdayHours,
                                           weekend: self.weekendHours, calendar: calendar)
-            let bounds = Self.bounds(for: now, hours: currentHours, calendar: calendar)
-            let insideWindow = now >= bounds.start && now < bounds.end
+            let insidePeriod = Self.periodContaining(now, hours: currentHours, calendar: calendar)
+            let insideWindow = insidePeriod != nil
+            let inRestGap = Self.isRestGap(now, hours: currentHours, calendar: calendar)
             isWithinReminderHours = insideWindow
-            windowEnd = bounds.end
-            if insideWindow {
+            if insideWindow || inRestGap {
                 remainingTime = Self.validRemaining(snapshot.remainingTime, fallback: intervalHours * 3_600)
-                isAwaitingAcknowledgment = snapshot.isAwaitingAcknowledgment
+                let crossedGap = insideWindow && Self.hasRestGapCrossed(
+                    after: snapshot.capturedAt, through: now,
+                    weekdayHours: self.weekdayHours, weekendHours: self.weekendHours,
+                    calendar: calendar
+                )
+                if snapshot.isAwaitingAcknowledgment && (inRestGap || crossedGap) {
+                    // The overlay itself is not restored. Re-offer its reminder
+                    // at the next active period instead of treating it as seen.
+                    remainingTime = 0
+                } else {
+                    isAwaitingAcknowledgment = insideWindow && snapshot.isAwaitingAcknowledgment
+                }
                 isSnoozed = snapshot.isSnoozed && !isAwaitingAcknowledgment
             } else {
-                // An overnight or post-window launch retires yesterday's UI and
-                // gives the next active window a complete interval.
+                // Before the first period or after the last, retire the saved
+                // reminder. Only a same-day rest gap preserves its progress.
                 remainingTime = intervalHours * 3_600
             }
         }
@@ -105,20 +133,40 @@ public struct ReminderSchedule {
     public mutating func update(at now: Date, uptime: TimeInterval = ReminderClock.uptime,
                                 isSessionActive: Bool? = nil, calendar: Calendar = .autoupdatingCurrent) {
         let today = calendar.dateComponents([.era, .year, .month, .day], from: now)
-        let oldWithinWindow = isWithinReminderHours
         let newLocalDay = !Self.sameDay(today, localDay)
+        let elapsed = max(0, uptime - lastUptime)
+        let projectedEnd = lastUpdateAt.addingTimeInterval(elapsed)
+        let countingStart: Date
+        if let pauseDeadlineUptime {
+            let pausedFor = max(0, pauseDeadlineUptime - lastUptime)
+            countingStart = lastUpdateAt.addingTimeInterval(pausedFor)
+        } else {
+            countingStart = lastUpdateAt
+        }
+        // Local time governs whether an old pending scene crossed a rest
+        // boundary; clock corrections must not keep it in the wrong period.
+        // Only the monotonic projection below consumes active-use time.
+        let crossedRestGap = !newLocalDay && Self.hasRestGapCrossed(
+            after: lastUpdateAt, through: max(now, projectedEnd),
+            weekdayHours: weekdayHours, weekendHours: weekendHours, calendar: self.calendar
+        )
 
         if newLocalDay {
             // A new local day always starts with a complete interval.
             remainingTime = intervalHours * 3_600
             isAwaitingAcknowledgment = false
             isSnoozed = false
-        } else if isCounting {
-            // Monotonic elapsed time prevents clock adjustments from changing
-            // the countdown. Clamp delayed callbacks at the previous cutoff.
-            let elapsed = max(0, uptime - lastUptime)
-            let beforeCutoff = max(0, windowEnd.timeIntervalSince(lastUpdateAt))
-            remainingTime = max(0, remainingTime - min(elapsed, beforeCutoff))
+        } else if self.isSessionActive && !isAwaitingAcknowledgment {
+            // Use monotonic elapsed time projected from the prior wall-clock
+            // anchor, beginning at a pause's monotonic expiry when necessary.
+            // Count only active-period overlaps so gaps and wall-clock jumps do
+            // not consume active-use time.
+            let activeElapsed = Self.activeSeconds(
+                from: countingStart, through: projectedEnd,
+                weekdayHours: weekdayHours, weekendHours: weekendHours,
+                calendar: self.calendar
+            )
+            remainingTime = max(0, remainingTime - activeElapsed)
         }
 
         if let pauseDeadlineUptime {
@@ -133,37 +181,35 @@ public struct ReminderSchedule {
 
         let hours = Self.hours(for: now, weekday: weekdayHours,
                                weekend: weekendHours, calendar: calendar)
-        let bounds = Self.bounds(for: now, hours: hours, calendar: calendar)
-        isWithinReminderHours = now >= bounds.start && now < bounds.end
-        windowEnd = bounds.end
-
-        // Opening a window that was previously closed begins from a full
-        // interval; inactive or overnight time never consumes the countdown.
-        if !newLocalDay && !oldWithinWindow && isWithinReminderHours {
-            remainingTime = intervalHours * 3_600
+        let currentPeriod = Self.periodContaining(now, hours: hours, calendar: calendar)
+        isWithinReminderHours = currentPeriod != nil
+        // If a delayed callback crossed a rest gap and returned during a later
+        // period, dismiss the stale UI and re-offer the same due reminder.
+        if crossedRestGap && isWithinReminderHours && isAwaitingAcknowledgment {
             isAwaitingAcknowledgment = false
+            remainingTime = 0
             isSnoozed = false
         }
         if !isWithinReminderHours {
-            isAwaitingAcknowledgment = false
-            isSnoozed = false
+            if isAwaitingAcknowledgment {
+                // A pending reminder is re-offered at the next period opening.
+                remainingTime = Self.isRestGap(now, hours: hours, calendar: calendar)
+                    ? 0 : intervalHours * 3_600
+                isAwaitingAcknowledgment = false
+            }
+            if !Self.isRestGap(now, hours: hours, calendar: calendar) {
+                isSnoozed = false
+            }
         }
         if let isSessionActive { self.isSessionActive = isSessionActive }
 
-        if now < bounds.start {
-            nextBoundaryAt = bounds.start
-        } else if now < bounds.end {
-            nextBoundaryAt = bounds.end
-        } else {
-            let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
-            let nextHours = Self.hours(for: tomorrow, weekday: weekdayHours,
-                                       weekend: weekendHours, calendar: calendar)
-            nextBoundaryAt = Self.bounds(for: tomorrow, hours: nextHours, calendar: calendar).start
-        }
+        nextBoundaryAt = Self.nextBoundary(after: now, weekdayHours: weekdayHours,
+                                            weekendHours: weekendHours, calendar: calendar)
 
         localDay = today
         lastUpdateAt = now
         lastUptime = uptime
+        self.calendar = calendar
     }
 
     /// Mark the currently due reminder as visible. This remains permissive for
@@ -180,6 +226,17 @@ public struct ReminderSchedule {
                                      calendar: Calendar = .autoupdatingCurrent) {
         update(at: now, uptime: uptime, calendar: calendar)
         guard isAwaitingAcknowledgment else { return }
+        isAwaitingAcknowledgment = false
+        isSnoozed = false
+        remainingTime = intervalHours * 3_600
+    }
+
+    /// A drink can happen before a reminder. Keep an intentional pause, but
+    /// replace either the ordinary countdown or a snooze with a full interval.
+    public mutating func recordDrink(at now: Date,
+                                     uptime: TimeInterval = ReminderClock.uptime,
+                                     calendar: Calendar = .autoupdatingCurrent) {
+        update(at: now, uptime: uptime, calendar: calendar)
         isAwaitingAcknowledgment = false
         isSnoozed = false
         remainingTime = intervalHours * 3_600
@@ -297,15 +354,111 @@ public struct ReminderSchedule {
         return weekend
     }
 
-    private static func bounds(for date: Date, hours: DailyHours, calendar: Calendar) -> (start: Date, end: Date) {
-        let start = localTime(hours.startMinutes, on: date, calendar: calendar)
-        let end: Date
-        if hours.endMinutes == 1_440 {
-            end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
-        } else {
-            end = localTime(hours.endMinutes, on: date, calendar: calendar)
+    private struct PeriodBounds {
+        var start: Date
+        var end: Date
+    }
+
+    private static func periodBounds(for date: Date, hours: DailyHours,
+                                     calendar: Calendar) -> [PeriodBounds] {
+        let dayStart = calendar.startOfDay(for: date)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+        return hours.periods.map { period in
+            let start = localTime(period.startMinutes, on: dayStart, calendar: calendar)
+            let end = period.endMinutes == 1_440
+                ? nextDay
+                : localTime(period.endMinutes, on: dayStart, calendar: calendar)
+            return PeriodBounds(start: start, end: end)
         }
-        return (start, end)
+    }
+
+    private static func periodContaining(_ date: Date, hours: DailyHours,
+                                         calendar: Calendar) -> PeriodBounds? {
+        periodBounds(for: date, hours: hours, calendar: calendar)
+            .first { date >= $0.start && date < $0.end }
+    }
+
+    private static func isRestGap(_ date: Date, hours: DailyHours,
+                                  calendar: Calendar) -> Bool {
+        let periods = periodBounds(for: date, hours: hours, calendar: calendar)
+        guard periods.count > 1 else { return false }
+        for index in 0..<(periods.count - 1) {
+            let previous = periods[index]
+            let next = periods[index + 1]
+            if previous.end < next.start && date >= previous.end && date < next.start {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func nextBoundary(after date: Date, weekdayHours: DailyHours,
+                                     weekendHours: DailyHours?, calendar: Calendar) -> Date {
+        let todayHours = hours(for: date, weekday: weekdayHours,
+                               weekend: weekendHours, calendar: calendar)
+        if let boundary = periodBounds(for: date, hours: todayHours, calendar: calendar)
+            .flatMap({ [$0.start, $0.end] })
+            .filter({ $0 > date })
+            .min() {
+            return boundary
+        }
+
+        let tomorrow = calendar.date(byAdding: .day, value: 1,
+                                     to: calendar.startOfDay(for: date))!
+        let tomorrowHours = hours(for: tomorrow, weekday: weekdayHours,
+                                  weekend: weekendHours, calendar: calendar)
+        return periodBounds(for: tomorrow, hours: tomorrowHours, calendar: calendar)
+            .first!.start
+    }
+
+    /// Counts only the parts of a monotonic elapsed interval that intersect
+    /// configured periods, walking local days so delayed callbacks can cross
+    /// several same-day gaps safely.
+    private static func activeSeconds(from start: Date, through end: Date,
+                                      weekdayHours: DailyHours, weekendHours: DailyHours?,
+                                      calendar: Calendar) -> TimeInterval {
+        guard end > start else { return 0 }
+        var dayStart = calendar.startOfDay(for: start)
+        var counted: TimeInterval = 0
+
+        while dayStart < end {
+            let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+            let dayHours = hours(for: dayStart, weekday: weekdayHours,
+                                 weekend: weekendHours, calendar: calendar)
+            for period in periodBounds(for: dayStart, hours: dayHours, calendar: calendar) {
+                let overlapStart = max(start, period.start)
+                let overlapEnd = min(end, period.end)
+                if overlapEnd > overlapStart {
+                    counted += overlapEnd.timeIntervalSince(overlapStart)
+                }
+            }
+            dayStart = nextDay
+        }
+        return counted
+    }
+
+    private static func hasRestGapCrossed(after start: Date, through end: Date,
+                                          weekdayHours: DailyHours, weekendHours: DailyHours?,
+                                          calendar: Calendar) -> Bool {
+        guard end > start else { return false }
+        var dayStart = calendar.startOfDay(for: start)
+
+        while dayStart < end {
+            let dayHours = hours(for: dayStart, weekday: weekdayHours,
+                                 weekend: weekendHours, calendar: calendar)
+            let periods = periodBounds(for: dayStart, hours: dayHours, calendar: calendar)
+            if periods.count > 1 {
+                for index in 0..<(periods.count - 1) {
+                    let current = periods[index]
+                    let next = periods[index + 1]
+                    if current.end < next.start && current.end > start && current.end <= end {
+                        return true
+                    }
+                }
+            }
+            dayStart = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+        }
+        return false
     }
 
     private static func localTime(_ minute: Int, on date: Date, calendar: Calendar) -> Date {

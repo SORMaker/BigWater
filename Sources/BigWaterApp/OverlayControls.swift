@@ -63,13 +63,42 @@ enum OverlayControls {
         return (buttons, badge)
     }
 
+    /// Fixed corners map to corresponding entrances; random retains the
+    /// reminder's existing randomized edge and position.
+    static func reminderEntrance(for position: ReminderPosition,
+                                 randomEntrance: ReminderEntrance) -> ReminderEntrance {
+        switch position {
+        case .random: return randomEntrance
+        case .topLeft: return ReminderEntrance(edge: .top, position: 0)
+        case .topRight: return ReminderEntrance(edge: .top, position: 1)
+        case .bottomLeft: return ReminderEntrance(edge: .bottom, position: 0)
+        case .bottomRight: return ReminderEntrance(edge: .bottom, position: 1)
+        }
+    }
+
     static func compactLayout(visibleBounds: CGRect,
-                              isPreview: Bool) -> (card: CGRect, buttons: [OverlayButtonSpec]) {
+                              isPreview: Bool,
+                              position: ReminderPosition = .random)
+        -> (card: CGRect, buttons: [OverlayButtonSpec]) {
         let cardWidth = min(276.0, max(220.0, visibleBounds.width - 20))
         let cardHeight = min(204.0, max(174.0, visibleBounds.height - 20))
+        let desiredCardOrigin: CGPoint
+        switch position {
+        case .random, .bottomRight:
+            // Keep the established default compact-card location.
+            desiredCardOrigin = CGPoint(x: visibleBounds.maxX - cardWidth - 18,
+                                        y: visibleBounds.maxY - cardHeight - 18)
+        case .topLeft:
+            desiredCardOrigin = CGPoint(x: visibleBounds.minX + 18, y: visibleBounds.minY + 18)
+        case .topRight:
+            desiredCardOrigin = CGPoint(x: visibleBounds.maxX - cardWidth - 18,
+                                        y: visibleBounds.minY + 18)
+        case .bottomLeft:
+            desiredCardOrigin = CGPoint(x: visibleBounds.minX + 18,
+                                        y: visibleBounds.maxY - cardHeight - 18)
+        }
         let cardOrigin = clampedOrigin(size: CGSize(width: cardWidth, height: cardHeight),
-                                       desired: CGPoint(x: visibleBounds.maxX - cardWidth - 18,
-                                                        y: visibleBounds.maxY - cardHeight - 18),
+                                       desired: desiredCardOrigin,
                                        within: visibleBounds)
         let card = CGRect(origin: cardOrigin, size: CGSize(width: cardWidth, height: cardHeight))
         let inset = 18.0
