@@ -80,6 +80,7 @@ final class SettingsModel: ObservableObject {
 struct SettingsView: View {
     static let preferredSize = NSSize(width: 356, height: 620)
     @ObservedObject var model: SettingsModel
+    @ObservedObject var updater: AppUpdater
     private let ink = Color(nsColor: WaterPalette.ink)
     private let clay = Color(nsColor: WaterPalette.clay)
     private let cream = Color(nsColor: WaterPalette.cream)
@@ -99,6 +100,7 @@ struct SettingsView: View {
                 historyOptions
                 Divider()
                 loginOptions
+                updateOptions
                 Button { model.onQuit?() } label: {
                     HStack {
                         Text("退出 Big Water")
@@ -337,6 +339,31 @@ struct SettingsView: View {
                     Button("打开系统登录项") { model.onOpenLoginSettings?() }
                 }
             }
+        }
+    }
+
+    private var updateOptions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("版本 \(updater.version)").foregroundStyle(ink.opacity(0.6))
+                Spacer()
+                Button(updater.availableVersion == nil ? "检查更新…" : "查看更新…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
+            if let version = updater.availableVersion {
+                Text("发现新版本 \(version)").fontWeight(.medium).foregroundStyle(clay)
+            }
+            Toggle("自动检查更新", isOn: Binding(
+                get: { updater.automaticallyChecksForUpdates },
+                set: { updater.setAutomaticallyChecksForUpdates($0) }
+            ))
+            .toggleStyle(.switch).controlSize(.small)
+            .disabled(!updater.isAvailable)
+            Text(updater.statusText ?? (updater.automaticallyChecksForUpdates
+                 ? "每天检查新版本，也可随时手动检查。"
+                 : "自动检查已关闭，可手动检查更新。"))
+                .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

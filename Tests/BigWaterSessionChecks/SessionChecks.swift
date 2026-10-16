@@ -64,6 +64,13 @@ private final class SessionChecks {
     func dailyStory(_ preferences: UserDefaults) throws {
         preferences.set(2.0, forKey: "reminderIntervalHours")
         launch(preferences)
+        try expect(!delegate.updater.isAvailable && !delegate.updater.canCheckForUpdates,
+                   "Command-line checks must not start the live updater")
+        delegate.updater.setAutomaticallyChecksForUpdates(true)
+        delegate.updater.checkForUpdates()
+        try expect(!delegate.updater.automaticallyChecksForUpdates,
+                   "An unbundled runner must keep updating disabled")
+        pass("unbundled checks do not start Sparkle or enable automatic checks")
         try expect(schedule.intervalHours == 2, "Run session checks with the standard two-hour interval")
         try expect(schedule.isCounting, "Session checks require an awake display in the active user session")
 

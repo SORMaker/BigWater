@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private(set) var history = HydrationHistory()
     private(set) var schedule = ReminderSchedule()
     private(set) var settings: SettingsModel!
+    private(set) var updater: AppUpdater!
     private(set) var reminderTimer: Timer?
     private var checkpointTimer: Timer?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -87,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                     weekdayHours: configuration.weekdayHours, weekendHours: configuration.weekendHours,
                                     snapshot: storage.loadProgress())
         settings = SettingsModel(preferences: configuration)
+        updater = AppUpdater()
+        updater.beforeCheckForUpdates = { [weak self] in self?.popover.performClose(nil) }
+        updater.onUpdateAvailabilityChange = { [weak self] in self?.refreshUpdateIndicator() }
         settings.onPreferencesChange = { [weak self] in self?.changePreferences(to: $0) }
         settings.onPause = { [weak self] in self?.pause(for: $0) }
         settings.onDrink = { [weak self] in self?.drinkFromMenu() }
@@ -109,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.animates = false
         popover.delegate = self
         popover.appearance = NSAppearance(named: .aqua)
-        popover.contentViewController = NSHostingController(rootView: SettingsView(model: settings))
+        popover.contentViewController = NSHostingController(rootView: SettingsView(model: settings, updater: updater))
         popover.contentSize = SettingsView.preferredSize
 
         let item = NSStatusBar.system.statusItem(withLength: 28)
@@ -345,7 +349,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             settings.countdownOverride = "明天见"
             settings.scheduleText = "剩余作息不足一个间隔，明天使用时重新计时"
         }
-        statusItem?.button?.toolTip = "Big Water · \(settings.scheduleText)"
+        let updateHint = updater.availableVersion.map { "发现新版本 \($0) · " } ?? ""
+        statusItem?.button?.toolTip = "Big Water · \(updateHint)\(settings.scheduleText)"
+    }
+
+    private func refreshUpdateIndicator() {
+        let hasUpdate = updater.availableVersion != nil
+        statusItem?.length = hasUpdate ? 38 : 28
+        statusItem?.button?.imagePosition = hasUpdate ? .imageLeft : .imageOnly
+        statusItem?.button?.attributedTitle = NSAttributedString(string: hasUpdate ? "•" : "",
+                                                                attributes: [.foregroundColor: WaterPalette.clay])
+        statusItem?.button?.setAccessibilityLabel(hasUpdate
+            ? "Big Water 发现新版本，打开设置查看更新" : "Big Water 喝水提醒设置")
+        updateSettings()
     }
 
     private func observeSessionChanges() {
