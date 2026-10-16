@@ -78,40 +78,36 @@ final class SettingsModel: ObservableObject {
 }
 
 struct SettingsView: View {
-    static let preferredSize = NSSize(width: 356, height: 620)
+    static let preferredSize = NSSize(width: 356, height: 540)
     @ObservedObject var model: SettingsModel
     @ObservedObject var updater: AppUpdater
+    @State private var showingMoreSettings = false
+    @State private var pauseMinutes = "30"
     private let ink = Color(nsColor: WaterPalette.ink)
     private let clay = Color(nsColor: WaterPalette.clay)
     private let cream = Color(nsColor: WaterPalette.cream)
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                countdownCard
-                if model.isAwaitingAcknowledgment { reminderActions }
-                intervalRow
-                pauseControls
-                Divider()
-                reminderOptions
-                hoursOptions
-                appearanceOptions
-                historyOptions
-                Divider()
-                loginOptions
-                updateOptions
-                Button { model.onQuit?() } label: {
-                    HStack {
-                        Text("退出 Big Water")
-                        Spacer()
-                        Text("↗")
+            VStack(alignment: .leading, spacing: 16) {
+                if showingMoreSettings {
+                    moreSettings
+                } else {
+                    header
+                    countdownCard
+                    if model.isAwaitingAcknowledgment { reminderActions }
+                    VStack(alignment: .leading, spacing: 12) {
+                        intervalRow
+                        pauseControls
                     }
-                    .foregroundStyle(clay)
-                    .contentShape(Rectangle())
+                    Divider()
+                    VStack(alignment: .leading, spacing: 16) {
+                        historyOptions
+                        hoursOptions
+                    }
+                    Divider()
+                    appOptions
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut("q", modifiers: .command)
             }
             .font(.system(size: 12))
             // Follow the visible width: a scroll bar appears once an expanded
@@ -122,6 +118,9 @@ struct SettingsView: View {
         .frame(width: Self.preferredSize.width, height: Self.preferredSize.height)
         .background(cream)
         .foregroundStyle(ink)
+        .onChange(of: model.isVisible) { visible in
+            if !visible { showingMoreSettings = false }
+        }
     }
 
     private var header: some View {
@@ -134,17 +133,35 @@ struct SettingsView: View {
                 Text("喝口水，再继续。").foregroundStyle(ink.opacity(0.6))
             }
             Spacer(minLength: 0)
+            Button { showingMoreSettings = true } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(ink.opacity(0.6))
+            .accessibilityLabel("更多设置")
+            .help("更多设置")
         }
+    }
+
+    @ViewBuilder
+    private var moreSettings: some View {
+        Button { showingMoreSettings = false } label: {
+            Label("返回", systemImage: "chevron.left")
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        Text("更多设置").font(.system(size: 20, weight: .semibold))
+        reminderOptions
+        Divider()
+        appearanceOptions
     }
 
     private var countdownCard: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(model.stateTitle).font(.system(size: 11, weight: .medium))
-                Spacer()
-                Text("今天确认 \(model.todayDrinkTimes.count) 次")
-                    .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-            }
+            Text(model.stateTitle).font(.system(size: 11, weight: .medium))
             if model.isVisible {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     countdownNumber(at: context.date)
@@ -170,10 +187,7 @@ struct SettingsView: View {
 
     private var intervalRow: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("提醒间隔").fontWeight(.medium)
-                Text("每 \(model.hoursText) 小时").font(.system(size: 11)).foregroundStyle(ink.opacity(0.6))
-            }
+            Text("提醒间隔（小时）").fontWeight(.medium)
             Spacer()
             HStack(spacing: 0) {
                 intervalButton("−", label: "减少提醒间隔", disabled: model.hours <= ReminderSchedule.minimumHours) {
@@ -210,16 +224,34 @@ struct SettingsView: View {
                 Button("恢复计时") { model.onResume?() }
                     .buttonStyle(.borderedProminent).tint(clay)
             } else {
-                Button("暂停 30 分钟") { model.onPause?(30) }
-                Button("暂停 60 分钟") { model.onPause?(60) }
+                TextField("分钟", text: $pauseMinutes)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 48)
+                    .accessibilityLabel("暂停时长，分钟")
+                    .onSubmit { pause() }
+                Text("分钟")
+                Button("暂停提醒") { pause() }
+                    .disabled(pauseDuration == nil)
             }
             Spacer(minLength: 0)
         }
         .controlSize(.small)
     }
 
+    private var pauseDuration: Int? {
+        guard let minutes = Int(pauseMinutes), minutes > 0 else { return nil }
+        return minutes
+    }
+
+    private func pause() {
+        guard let minutes = pauseDuration else { return }
+        model.onPause?(minutes)
+    }
+
     private var reminderOptions: some View {
-        DisclosureGroup("提醒方式") {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("提醒方式").fontWeight(.medium)
             VStack(alignment: .leading, spacing: 12) {
                 Picker("提醒方式", selection: preferenceBinding(\.style)) {
                     Text("角色动画").tag(ReminderStyle.animated)
@@ -234,12 +266,11 @@ struct SettingsView: View {
                     .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.top, 10)
         }
     }
 
     private var hoursOptions: some View {
-        DisclosureGroup("作息时间 · \(hoursSummary)") {
+        DisclosureGroup("作息时间") {
             VStack(alignment: .leading, spacing: 12) {
                 hoursRow(weekend: false)
                 Toggle("周末使用单独作息", isOn: Binding(
@@ -257,11 +288,6 @@ struct SettingsView: View {
             }
             .padding(.top, 10)
         }
-    }
-
-    private var hoursSummary: String {
-        let hours = model.preferences.weekdayHours
-        return "\(SettingsModel.timeText(hours.startMinutes))–\(SettingsModel.timeText(hours.endMinutes))"
     }
 
     private func hoursRow(weekend: Bool) -> some View {
@@ -286,7 +312,8 @@ struct SettingsView: View {
     }
 
     private var appearanceOptions: some View {
-        DisclosureGroup("角色与外观") {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("角色与外观").fontWeight(.medium)
             VStack(alignment: .leading, spacing: 12) {
                 Picker("角色", selection: appearanceBinding(\.character)) {
                     Text("Claude").tag(ReminderCharacter.claude)
@@ -302,12 +329,11 @@ struct SettingsView: View {
                 Text("预览不计入喝水记录，也不重置计时。")
                     .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
             }
-            .padding(.top, 10)
         }
     }
 
     private var historyOptions: some View {
-        DisclosureGroup("今日记录 · \(model.todayDrinkTimes.count) 次确认") {
+        DisclosureGroup("今日记录") {
             VStack(alignment: .leading, spacing: 8) {
                 if model.todayDrinkTimes.isEmpty {
                     Text("喝水后点提醒里的按钮，这里会记录时间。")
@@ -326,45 +352,67 @@ struct SettingsView: View {
         }
     }
 
+    private var appOptions: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                loginOptions
+                HStack {
+                    Text("自动检查更新")
+                    Spacer()
+                    Toggle("自动检查更新", isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.setAutomaticallyChecksForUpdates($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch).controlSize(.small)
+                    .disabled(!updater.isAvailable)
+                }
+            }
+            Button { model.onQuit?() } label: {
+                HStack {
+                    Text("退出 Big Water")
+                    Spacer()
+                    Text("↗")
+                }
+                .foregroundStyle(clay)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("q", modifiers: .command)
+            versionOptions
+        }
+    }
+
     private var loginOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("登录时启动", isOn: Binding(
-                get: { model.launchAtLogin },
-                set: { model.onLaunchAtLoginChange?($0) }
-            ))
-            .toggleStyle(.switch).controlSize(.small)
-            if let status = model.loginStatusText {
-                Text(status).font(.system(size: 11)).foregroundStyle(ink.opacity(0.6))
-                if model.loginNeedsApproval {
-                    Button("打开系统登录项") { model.onOpenLoginSettings?() }
-                }
+            HStack {
+                Text("登录时启动")
+                Spacer()
+                Toggle("登录时启动", isOn: Binding(
+                    get: { model.launchAtLogin },
+                    set: { model.onLaunchAtLoginChange?($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch).controlSize(.small)
+            }
+            .help(model.loginStatusText ?? "登录时启动 Big Water")
+            if model.loginNeedsApproval {
+                Button("打开系统登录项") { model.onOpenLoginSettings?() }
             }
         }
     }
 
-    private var updateOptions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("版本 \(updater.version)").foregroundStyle(ink.opacity(0.6))
-                Spacer()
-                Button(updater.availableVersion == nil ? "检查更新…" : "查看更新…") { updater.checkForUpdates() }
-                    .disabled(!updater.canCheckForUpdates)
+    private var versionOptions: some View {
+        HStack {
+            Text("版本 \(updater.version)").foregroundStyle(ink.opacity(0.6))
+            Spacer()
+            Button(updater.availableVersion.map { "更新至 \($0)…" } ?? "检查更新…") {
+                updater.checkForUpdates()
             }
-            if let version = updater.availableVersion {
-                Text("发现新版本 \(version)").fontWeight(.medium).foregroundStyle(clay)
-            }
-            Toggle("自动检查更新", isOn: Binding(
-                get: { updater.automaticallyChecksForUpdates },
-                set: { updater.setAutomaticallyChecksForUpdates($0) }
-            ))
-            .toggleStyle(.switch).controlSize(.small)
-            .disabled(!updater.isAvailable)
-            Text(updater.statusText ?? (updater.automaticallyChecksForUpdates
-                 ? "每天检查新版本，也可随时手动检查。"
-                 : "自动检查已关闭，可手动检查更新。"))
-                .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
-                .fixedSize(horizontal: false, vertical: true)
+            .disabled(!updater.canCheckForUpdates)
+            .help(updater.statusText ?? "检查是否有新版本")
         }
+        .controlSize(.small)
     }
 
     private func preferenceBinding<T>(_ keyPath: WritableKeyPath<AppPreferences, T>) -> Binding<T> {
