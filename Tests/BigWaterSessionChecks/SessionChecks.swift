@@ -221,8 +221,8 @@ private final class SessionChecks {
         relaunch(preferences)
         try expect(overlay.isActive && schedule.isAwaitingAcknowledgment, "Restart restored pending state without its visible reminder")
         overlay.acknowledge()
-        try expect(delegate.history.count(on: now) == 1, "Character dismissal counted a drink")
-        pass("outstanding reminder is re-presented after restart and dismiss does not record")
+        try expect(delegate.history.count(on: now) == 2, "Character confirmation did not count the restored reminder")
+        pass("outstanding reminder is re-presented after restart and character confirmation records a drink")
 
         move(to: 21, 8)
         post(.NSCalendarDayChanged, workspace: false)
@@ -269,6 +269,59 @@ private final class SessionChecks {
         try expect(!preferences.dictionaryRepresentation().keys.contains { $0.hasPrefix("appStateV1.unreadable.") },
                    "This build's own saved state was treated as unreadable")
         pass("reminder and preview button layouts stay inside the visible display")
+    }
+
+    /// Both confirmation entry points share one record per real reminder.
+    func drinkConfirmationScenario(_ preferences: UserDefaults) throws {
+        move(to: 27, 8)
+        launch(preferences)
+        var confirmed = 0
+        var hour = 10
+
+        for style in ReminderStyle.allCases {
+            delegate.settings.change { $0.style = style }
+            for characterFirst in [true, false] {
+                move(to: 27, hour)
+                hour += 2
+                post(.NSSystemClockDidChange, workspace: false)
+                try expect(overlay.isAwaitingAcknowledgment, "Confirmation fixture did not start")
+
+                if characterFirst { overlay.acknowledge() }
+                else { overlay.confirmDrink() }
+                confirmed += 1
+                try expect(delegate.history.count(on: now) == confirmed,
+                           "The first confirmation did not record exactly one drink")
+                try expect(delegate.history.drinks.last == now
+                           && delegate.settings.todayDrinkTimes.count == confirmed,
+                           "Confirmation time or displayed count was not updated immediately")
+                let deadline = now.addingTimeInterval(7_200)
+                try expect(!schedule.isAwaitingAcknowledgment && schedule.nextReminderAt == deadline,
+                           "Confirmation did not restart the full interval")
+
+                overlay.acknowledge()
+                overlay.confirmDrink()
+                delegate.settings.onDrink?()
+                try expect(delegate.history.count(on: now) == confirmed && schedule.nextReminderAt == deadline,
+                           "Repeated or mixed confirmation counted the same reminder twice")
+                try expect(AppStorage(defaults: preferences).loadHistory().count(on: now) == confirmed,
+                           "Confirmation was not persisted exactly once")
+
+                relaunch(preferences)
+                delegate.settings.onDrink?()
+                try expect(delegate.history.count(on: now) == confirmed && !overlay.isActive,
+                           "Restart lost a confirmation or allowed the same reminder to be counted again")
+                pass("\(style.rawValue) \(characterFirst ? "character" : "button") first: one saved drink per reminder")
+            }
+
+            let deadline = schedule.nextReminderAt
+            delegate.settings.onPreview?()
+            try expect(overlay.isActive && delegate.isPreviewing, "Character preview fixture did not start")
+            overlay.acknowledge()
+            try expect(!overlay.isActive && !delegate.isPreviewing
+                       && delegate.history.count(on: now) == confirmed && schedule.nextReminderAt == deadline,
+                       "Clicking the preview character recorded a drink or changed the countdown")
+            pass("\(style.rawValue) preview character leaves drink history and countdown unchanged")
+        }
     }
 
     /// Saved state written by another build, or damaged.
@@ -442,6 +495,7 @@ private enum BigWaterSessionChecks {
             checks.scenario("saved state from other builds", checks.storageScenario)
             checks.scenario("overlay timing and input", checks.overlayScenario)
             checks.scenario("system state and menu actions", checks.systemScenario)
+            checks.scenario("drink confirmation and deduplication", checks.drinkConfirmationScenario)
             if checks.failures.isEmpty {
                 print("\(checks.passed) session checks passed")
             } else {

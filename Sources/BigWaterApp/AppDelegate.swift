@@ -96,8 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.onLaunchAtLoginChange = { [weak self] in self?.changeLaunchAtLogin(to: $0) }
         settings.onOpenLoginSettings = { SMAppService.openSystemSettingsLoginItems() }
         settings.onQuit = { NSApp.terminate(nil) }
-        overlay.onAcknowledge = { [weak self] in self?.acknowledged(drink: false) }
-        overlay.onDrink = { [weak self] in self?.acknowledged(drink: true) }
+        overlay.onAcknowledge = { [weak self] in self?.acknowledged() }
+        overlay.onDrink = { [weak self] in self?.acknowledged() }
         overlay.onSnooze = { [weak self] in self?.snooze(minutes: $0) }
         overlay.onPreviewEnd = { [weak self] in
             self?.isPreviewing = false
@@ -174,19 +174,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         checkReminder()
     }
 
-    private func acknowledged(drink: Bool) {
+    private func acknowledged() {
         guard !isPreviewing else { return }
         let wasOutstanding = schedule.isAwaitingAcknowledgment
         let now = dateNow()
         let uptime = uptimeNow()
         schedule.update(at: now, uptime: uptime, isSessionActive: canPresentReminder)
         guard wasOutstanding else { checkReminder(); return }
-        if drink {
-            // A visible real button still expresses a drink confirmation if
-            // its click wins the race with the daily closing callback.
-            history.recordDrink(at: now)
-            logger.info("Drink confirmed")
-        }
+        // A click on the character or drink button confirms the outstanding
+        // reminder, even if it wins the race with the daily closing callback.
+        history.recordDrink(at: now)
+        logger.info("Drink confirmed")
         schedule.acknowledge(at: now, uptime: uptime)
         checkReminder()
     }
@@ -202,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// plays the same exit as a click on its own button.
     private func drinkFromMenu() {
         if !isPreviewing && overlay.isAwaitingAcknowledgment { overlay.confirmDrink() }
-        else { acknowledged(drink: true) }
+        else { acknowledged() }
     }
 
     private func snoozeFromMenu(minutes: Int) {

@@ -227,7 +227,7 @@ struct SettingsView: View {
                 Toggle("提醒时播放声音", isOn: preferenceBinding(\.soundEnabled))
                     .toggleStyle(.switch).controlSize(.small)
                 Text(model.preferences.style == .animated
-                     ? "点角色收起提醒；点“我刚喝过水”才计入记录。"
+                     ? "点角色或“我刚喝过水”都会记录一次，同一次提醒只记一次。"
                      : "喝水后确认，忙时可选择稍后再提醒。")
                     .font(.system(size: 10)).foregroundStyle(ink.opacity(0.6))
                     .fixedSize(horizontal: false, vertical: true)

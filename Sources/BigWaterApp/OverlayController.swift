@@ -62,8 +62,8 @@ final class OverlayController {
         return true
     }
 
-    /// Character clicks dismiss the reminder and restart the regular interval,
-    /// but they intentionally do not claim that the user drank water.
+    /// Character clicks confirm a drink and restart the regular interval,
+    /// sharing the same per-reminder action guard as the drink button.
     func acknowledge() {
         guard isActive, !actionInvoked else { return }
         if isPreview {
@@ -412,7 +412,7 @@ private final class AnimationCanvas: NSView {
         accessibleCharacter.setAccessibilityLabel(label)
         accessibleCharacter.setAccessibilityHelp(isPreview
             ? "点击结束预览。"
-            : "点击关闭提醒并重新开始计时；喝水请按我刚喝过水。")
+            : "点击记录一次喝水、收起提醒并重新开始计时。")
         while accessibleButtons.count < buttons.count {
             let button = AccessibleReminderCharacter()
             button.setAccessibilityRole(.button)
