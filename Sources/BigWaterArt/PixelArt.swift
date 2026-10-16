@@ -81,13 +81,14 @@ public enum PixelArt {
 
     public static func claude(in context: CGContext, at point: CGPoint,
                               phase: ReminderPhase, poseTime: Double, hovered: Bool = false,
-                              theme: ReminderTheme = .blue) {
+                              theme: ReminderTheme = .blue, usesRope: Bool = true) {
         context.saveGState()
         context.setShouldAntialias(false)
         context.translateBy(x: (point.x / 4).rounded() * 4 - 64,
                             y: (point.y / 4).rounded() * 4 - 64)
         context.scaleBy(x: 4, y: 4)
-        for block in claudeBlocks(phase: phase, poseTime: poseTime, hovered: hovered, theme: theme) {
+        for block in claudeBlocks(phase: phase, poseTime: poseTime, hovered: hovered,
+                                  theme: theme, usesRope: usesRope) {
             rect(context, block.frame.minX, block.frame.minY, block.frame.width, block.frame.height, block.color)
         }
         let cycle = poseTime.truncatingRemainder(dividingBy: ReminderScene.throwPeriod)
@@ -113,35 +114,42 @@ public enum PixelArt {
     }
 
     private static func claudeBlocks(phase: ReminderPhase, poseTime: Double, hovered: Bool,
-                                    theme: ReminderTheme = .blue) -> [PixelBlock] {
+                                    theme: ReminderTheme = .blue, usesRope: Bool = true) -> [PixelBlock] {
         var blocks: [PixelBlock] = []
         func paint(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: NSColor) {
             blocks.append(PixelBlock(frame: CGRect(x: x, y: y, width: width, height: height), color: color))
         }
         let clay = hovered ? WaterPalette.clayLight : WaterPalette.clay
         let accent = WaterPalette.accents(for: theme)
-        let climbing = phase == .ascending
-        let happy = phase == .acknowledging || climbing
+        let climbing = phase == .ascending && usesRope
+        let traveling = climbing || (!usesRope && (phase == .descending || phase == .ascending))
+        let happy = phase == .acknowledging || phase == .ascending
         let grip = Int(poseTime * 7) % 2
         let cycle = poseTime.truncatingRemainder(dividingBy: ReminderScene.throwPeriod)
 
         // Four little legs, alternating as he pulls himself up the rope.
         for (index, x) in [8.0, 12.0, 18.0, 22.0].enumerated() {
-            let lifted = climbing && (index + grip) % 2 == 0
+            let lifted = traveling && (index + grip) % 2 == 0
             paint(x, 22, 2, lifted ? 3 : 5, WaterPalette.clayShadow)
             paint(x, 22, 2, lifted ? 2 : 4, clay)
         }
 
-        // Near arm always grips the rope; a second hand leapfrogs on ascent.
-        let handY = climbing ? (grip == 0 ? 6.0 : 10.0) : 9.0
-        paint(4, handY + 2, 2, 7, WaterPalette.clayShadow)
-        paint(5, 15, 4, 3, clay)
-        paint(3, handY, 4, 3, clay)
-        paint(3, handY, 3, 1, WaterPalette.clayLight)
-        if climbing {
-            let secondY = grip == 0 ? 11.0 : 5.0
-            paint(6, secondY + 2, 2, 8, clay)
-            paint(3, secondY, 4, 3, WaterPalette.clayLight)
+        if usesRope {
+            // Near arm grips the rope; a second hand leapfrogs on ascent.
+            let handY = climbing ? (grip == 0 ? 6.0 : 10.0) : 9.0
+            paint(4, handY + 2, 2, 7, WaterPalette.clayShadow)
+            paint(5, 15, 4, 3, clay)
+            paint(3, handY, 4, 3, clay)
+            paint(3, handY, 3, 1, WaterPalette.clayLight)
+            if climbing {
+                let secondY = grip == 0 ? 11.0 : 5.0
+                paint(6, secondY + 2, 2, 8, clay)
+                paint(3, secondY, 4, 3, WaterPalette.clayLight)
+            }
+        } else {
+            paint(5, 15, 4, 3, clay)
+            paint(5, 17, 2, traveling && grip == 0 ? 3 : 5, WaterPalette.clayShadow)
+            paint(5, 17, 2, traveling && grip == 0 ? 2 : 4, clay)
         }
 
         // Recognizable wide Clawd body and slit eyes.
@@ -195,8 +203,10 @@ public enum PixelArt {
     /// Positive hit regions, derived from the painted sprite itself. Rope,
     /// carried bottles, flying bottles and transparent gaps are excluded.
     /// Coordinates are relative to Claude's center, in top-left view space.
-    public static func claudeHitRegions(phase: ReminderPhase, poseTime: Double) -> [CGRect] {
-        hitRegions(for: claudeBlocks(phase: phase, poseTime: poseTime, hovered: false))
+    public static func claudeHitRegions(phase: ReminderPhase, poseTime: Double,
+                                        usesRope: Bool = true) -> [CGRect] {
+        hitRegions(for: claudeBlocks(phase: phase, poseTime: poseTime,
+                                    hovered: false, usesRope: usesRope))
     }
 
     public static func droplet(in context: CGContext, at point: CGPoint,
@@ -295,8 +305,7 @@ public enum PixelArt {
     }
 
     /// Clip the sprite to its canvas before creating desktop input windows.
-    /// During descent the un-clipped pixels are above this display; on a
-    /// vertically arranged second display they must not become visible there.
+    /// Entering pixels beyond any edge must never intercept a neighboring display.
     public static func characterHitRegions(in scene: ReminderScene) -> [CGRect] {
         let point = scene.characterPosition
         let x = (point.x / 4).rounded() * 4
@@ -304,12 +313,14 @@ public enum PixelArt {
             ? sin(scene.phaseTime * 2.8).rounded() * 4 : 0
         let y = (point.y / 4).rounded() * 4 + bob
         let regions = scene.appearance.character == .claude
-            ? claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime)
+            ? claudeHitRegions(phase: scene.phase, poseTime: scene.phaseTime, usesRope: scene.usesRope)
             : dropletHitRegions(phase: scene.phase, poseTime: scene.phaseTime,
                                 theme: scene.appearance.theme)
-        let bounds = CGRect(origin: .zero, size: scene.viewport)
+        let bounds = CGRect(origin: .zero, size: scene.viewport).intersection(scene.visibleBounds)
         return regions.compactMap { region in
-            let clipped = region.offsetBy(dx: x, dy: y).intersection(bounds)
+            let positioned = CGRect(x: x + (scene.facesLeft ? -region.maxX : region.minX),
+                                    y: y + region.minY, width: region.width, height: region.height)
+            let clipped = positioned.intersection(bounds)
             return clipped.isNull || clipped.isEmpty ? nil : clipped
         }
     }
@@ -330,7 +341,8 @@ public enum PixelArt {
     }
 
     public static func speech(in context: CGContext, at origin: CGPoint, acknowledged: Bool,
-                              theme: ReminderTheme = .blue, isPreview: Bool = false) {
+                              theme: ReminderTheme = .blue, isPreview: Bool = false,
+                              tailOnLeft: Bool = false) {
         context.saveGState()
         context.translateBy(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
         let border = WaterPalette.rope
@@ -338,10 +350,16 @@ public enum PixelArt {
         rect(context, 0, 6, 180, 52, border)
         rect(context, 6, 2, 168, 60, WaterPalette.cream)
         rect(context, 2, 6, 176, 52, WaterPalette.cream)
+        context.saveGState()
+        if tailOnLeft {
+            context.translateBy(x: 180, y: 0)
+            context.scaleBy(x: -1, y: 1)
+        }
         rect(context, 180, 34, 6, 14, border)
         rect(context, 186, 38, 6, 6, border)
         rect(context, 178, 36, 6, 10, WaterPalette.cream)
         rect(context, 184, 40, 6, 2, WaterPalette.cream)
+        context.restoreGState()
         pixelText(acknowledged ? "GOOD JOB!" : "WATER TIME", in: context,
                   at: CGPoint(x: acknowledged ? 36 : 30, y: 12), scale: 2,
                   color: acknowledged ? WaterPalette.clay : WaterPalette.ink)
@@ -443,22 +461,33 @@ public enum SceneRenderer {
         guard scene.phase != .finished else { return }
         context.saveGState()
         context.setShouldAntialias(false)
+        context.clip(to: scene.visibleBounds)
         let point = scene.characterPosition
-        PixelArt.rope(in: context, x: point.x - 48, from: scene.topInset, to: point.y + 43)
+        if scene.usesRope {
+            PixelArt.rope(in: context, x: point.x + (scene.facesLeft ? 48 : -48),
+                          from: scene.visibleBounds.minY, to: point.y + 43)
+        }
         if let origin = speechOrigin(for: scene) {
             PixelArt.speech(in: context, at: origin,
                             acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme,
-                            isPreview: scene.isPreview)
+                            isPreview: scene.isPreview, tailOnLeft: !scene.facesLeft)
+        }
+        context.saveGState()
+        let spritePoint = CGPoint(x: (point.x / 4).rounded() * 4, y: (point.y / 4).rounded() * 4)
+        if scene.facesLeft {
+            context.translateBy(x: spritePoint.x * 2, y: 0)
+            context.scaleBy(x: -1, y: 1)
         }
         if scene.appearance.character == .claude {
-            PixelArt.claude(in: context, at: point, phase: scene.phase,
+            PixelArt.claude(in: context, at: spritePoint, phase: scene.phase,
                             poseTime: scene.phaseTime, hovered: scene.isHovered,
-                            theme: scene.appearance.theme)
+                            theme: scene.appearance.theme, usesRope: scene.usesRope)
         } else {
-            PixelArt.droplet(in: context, at: point, phase: scene.phase,
+            PixelArt.droplet(in: context, at: spritePoint, phase: scene.phase,
                              poseTime: scene.phaseTime, hovered: scene.isHovered,
                              theme: scene.appearance.theme)
         }
+        context.restoreGState()
         for bottle in scene.bottles {
             // Large bottles come toward the viewer and rotate in 15-degree steps.
             let scale = (bottle.scale * 2).rounded() / 2
@@ -479,16 +508,28 @@ public enum SceneRenderer {
     public static func speechOrigin(for scene: ReminderScene) -> CGPoint? {
         guard scene.phase == .reminding || scene.phase == .acknowledging else { return nil }
         let point = scene.characterPosition
-        let origin = CGPoint(x: max(12, point.x - 255), y: point.y - 36)
+        let bounds = scene.visibleBounds
+        let minX = bounds.minX + (scene.facesLeft ? 8 : 20)
+        let maxX = max(minX, bounds.maxX - (scene.facesLeft ? 200 : 188))
+        let origin = CGPoint(x: min(max(point.x + (scene.facesLeft ? -260 : 80), minX), maxX),
+                             y: min(max(point.y - 36, bounds.minY + 8),
+                                    max(bounds.minY + 8, bounds.maxY - 72)))
         return CGPoint(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
     }
 
-    /// The bubble body's fully painted rectangles (excluding the small tail),
-    /// in the same top-left view space as `draw`.
+    /// Fully painted body and tail rectangles, in the same top-left space as `draw`.
     public static func speechRegions(for scene: ReminderScene) -> [CGRect] {
         guard let origin = speechOrigin(for: scene) else { return [] }
+        let tailX = scene.facesLeft ? origin.x + 180 : origin.x - 6
+        let tipX = scene.facesLeft ? origin.x + 186 : origin.x - 12
         return [CGRect(x: origin.x + 6, y: origin.y, width: 168, height: 64),
-                CGRect(x: origin.x, y: origin.y + 6, width: 180, height: 52)]
+                CGRect(x: origin.x, y: origin.y + 6, width: 180, height: 52),
+                CGRect(x: tailX, y: origin.y + 34, width: 6, height: 14),
+                CGRect(x: tipX, y: origin.y + 38, width: 6, height: 6)]
+            .compactMap {
+                let clipped = $0.intersection(scene.visibleBounds)
+                return clipped.isNull || clipped.isEmpty ? nil : clipped
+            }
     }
 
     /// Conservative rectangles covering everything `draw` paints for this
@@ -496,14 +537,17 @@ public enum SceneRenderer {
     public static func paintedRegions(of scene: ReminderScene) -> [CGRect] {
         guard scene.phase != .finished else { return [] }
         let point = scene.characterPosition
-        // Rope, then the sprite (±64 plus grid snapping and the droplet's bob)
-        // with its carried bottle and release streaks.
-        var regions = [
-            CGRect(x: point.x - 56, y: scene.topInset, width: 16, height: max(0, point.y + 45 - scene.topInset)),
-            CGRect(x: point.x - 68, y: point.y - 78, width: 170, height: 150)
-        ]
+        // Sprite with its carried bottle/release streaks, mirrored with the art.
+        var regions = [CGRect(x: point.x - (scene.facesLeft ? 102 : 68),
+                              y: point.y - 78, width: 170, height: 150)]
+        if scene.usesRope {
+            regions.append(CGRect(x: point.x + (scene.facesLeft ? 40 : -56),
+                                  y: scene.visibleBounds.minY, width: 16,
+                                  height: max(0, point.y + 45 - scene.visibleBounds.minY)))
+        }
         if let origin = speechOrigin(for: scene) {
-            regions.append(CGRect(x: origin.x, y: origin.y, width: 192, height: 64))
+            regions.append(CGRect(x: origin.x - (scene.facesLeft ? 0 : 12),
+                                  y: origin.y, width: 192, height: 64))
         }
         for bottle in scene.bottles {
             // Half the diagonal of the 18×32 bottle covers any rotation.

@@ -258,24 +258,45 @@ private final class SessionChecks {
         try expect(!overlay.isActive && !schedule.isCounting, "A cutoff crossed during saving left the reminder visible")
         pass("saving across a clock boundary preserves the closing callback")
 
-        let visible = CGRect(x: 0, y: 24, width: 900, height: 540)
-        for character in ReminderCharacter.allCases {
-            var scene = ReminderScene(viewport: CGSize(width: 900, height: 600),
-                                      appearance: ReminderAppearance(character: character))
-            scene.advance(by: 2)
-            for preview in [false, true] {
-                let animated = OverlayControls.animatedButtons(in: scene, visibleBounds: visible, isPreview: preview)
-                let compact = OverlayControls.compactLayout(visibleBounds: visible, isPreview: preview)
-                try expect(animated.buttons.allSatisfy { visible.contains($0.frame) }, "Animated controls escaped the visible display")
-                try expect(visible.contains(compact.card) && compact.buttons.allSatisfy { compact.card.contains($0.frame) },
-                           "Compact controls escaped their card")
-                try expect(animated.buttons.count == (preview ? 1 : 3) && compact.buttons.count == (preview ? 1 : 3),
-                           "Preview exposed a real drink or snooze action")
+        for visible in [CGRect(x: 0, y: 24, width: 900, height: 540),
+                        CGRect(x: 80, y: 38, width: 560, height: 318),
+                        CGRect(x: 0, y: 38, width: 560, height: 318)] {
+            for character in ReminderCharacter.allCases {
+                for edge in ReminderEdge.allCases {
+                    for position in [0.0, 0.5, 1.0] {
+                        var scene = ReminderScene(viewport: CGSize(width: 900, height: 600),
+                                                  appearance: ReminderAppearance(character: character),
+                                                  entrance: ReminderEntrance(edge: edge, position: position),
+                                                  visibleBounds: visible)
+                        scene.advance(by: 2)
+                        for preview in [false, true] {
+                            let animated = OverlayControls.animatedButtons(in: scene, visibleBounds: visible, isPreview: preview)
+                            let compact = OverlayControls.compactLayout(visibleBounds: visible, isPreview: preview)
+                            try expect(animated.buttons.allSatisfy { visible.contains($0.frame) }, "Animated controls escaped the visible display")
+                            let characterRegions = PixelArt.characterHitRegions(in: scene)
+                            let bubble = SceneRenderer.speechRegions(for: scene)
+                            try expect(animated.buttons.allSatisfy { button in
+                                !characterRegions.contains { $0.intersects(button.frame) }
+                                    && !bubble.contains { $0.intersects(button.frame) }
+                            }, "Directional buttons overlap the character or bubble")
+                            try expect(bubble.allSatisfy { visible.contains($0) }, "Directional bubble escaped the visible display")
+                            let frames = animated.buttons.map(\.frame)
+                            scene.advance(by: 0.45)
+                            try expect(OverlayControls.animatedButtons(in: scene, visibleBounds: visible,
+                                                                       isPreview: preview).buttons.map(\.frame) == frames,
+                                       "Directional buttons swayed with the character")
+                            try expect(visible.contains(compact.card) && compact.buttons.allSatisfy { compact.card.contains($0.frame) },
+                                       "Compact controls escaped their card")
+                            try expect(animated.buttons.count == (preview ? 1 : 3) && compact.buttons.count == (preview ? 1 : 3),
+                                       "Preview exposed a real drink or snooze action")
+                        }
+                    }
+                }
             }
         }
         try expect(!preferences.dictionaryRepresentation().keys.contains { $0.hasPrefix("appStateV1.unreadable.") },
                    "This build's own saved state was treated as unreadable")
-        pass("reminder and preview button layouts stay inside the visible display")
+        pass("all entrance layouts avoid the Dock, stay clickable and hold buttons still")
     }
 
     /// Both confirmation entry points share one record per real reminder.
@@ -382,7 +403,7 @@ private final class SessionChecks {
         let buttonFrames = { self.overlay.buttonPanels.map(\.frame) }
         let shownBlockers = { self.overlay.blockerPanels.filter(\.isVisible) }
         let firstFrames = buttonFrames()
-        try expect(firstFrames.count == 3 && shownBlockers().count == 2, "Reminder controls or bubble blockers are missing")
+        try expect(firstFrames.count == 3 && shownBlockers().count == 4, "Reminder controls or bubble blockers are missing")
         spin(ReminderScene.throwPeriod)
         try expect(buttonFrames() == firstFrames, "Reminder buttons moved while shown")
         pass("animated buttons hold still and the speech bubble catches clicks")
@@ -407,6 +428,72 @@ private final class SessionChecks {
         overlay.stop()
         pass("the compact card catches clicks under fully painted pixels")
 
+    }
+
+    /// Exercise all four paths with real windows/timers, using settings-style
+    /// previews first so the test never records an artificial drink.
+    func directionalOverlayScenario(_ preferences: UserDefaults) throws {
+        let desktop = OverlayController()
+        defer { desktop.stop() }
+        var previewEnds = 0
+        var confirmations = 0
+        var finishes = 0
+        desktop.onPreviewEnd = { previewEnds += 1 }
+        desktop.onDrink = { confirmations += 1 }
+        desktop.onFinished = { finishes += 1 }
+        for edge in ReminderEdge.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 640, height: 420), isPreview: true,
+                                      entrance: ReminderEntrance(edge: edge, position: 0.5))
+            scene.advance(by: 2)
+            let layout = OverlayControls.animatedButtons(in: scene, visibleBounds: scene.visibleBounds, isPreview: true)
+            let regions = OverlayControls.animatedPaintedRegions(in: scene, previewBadge: layout.badge)
+            let badgeImage = PixelArt.image(size: scene.viewport, backingScale: 1) { context in
+                if let badge = layout.badge {
+                    OverlayControls.drawPreviewBadge(badge, in: context, theme: scene.appearance.theme)
+                }
+            }.representations.first as! NSBitmapImageRep
+            for y in 0..<badgeImage.pixelsHigh {
+                for x in 0..<badgeImage.pixelsWide where badgeImage.bitmapData![y * badgeImage.bytesPerRow + x * 4 + 3] > 0 {
+                    try expect(regions.contains { $0.contains(CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)) },
+                               "\(edge) preview badge or shadow was omitted from animation redraws")
+                }
+            }
+            let entrance = ReminderEntrance(edge: edge, position: 0.35)
+            try expect(desktop.start(isPreview: true, entrance: entrance), "\(edge) preview could not open")
+            spin(ReminderScene.descentDuration + 0.15)
+            try expect(desktop.buttonPanels.count == 1 && desktop.buttonPanels[0].isVisible,
+                       "\(edge) preview did not show its end button")
+            let frames = desktop.buttonPanels.map(\.frame)
+            desktop.suspend()
+            try expect(desktop.buttonPanels.allSatisfy { !$0.isVisible }, "\(edge) stayed visible during suspension")
+            desktop.resume()
+            spin(0.1)
+            try expect(desktop.buttonPanels.map(\.frame) == frames && desktop.buttonPanels[0].isVisible,
+                       "\(edge) resume changed its entrance or lost controls")
+            desktop.acknowledge()
+            try expect(!desktop.isActive && confirmations == 0, "Directional preview confirmed a drink")
+        }
+        try expect(previewEnds == ReminderEdge.allCases.count, "A directional preview never ended")
+        pass("all preview badge pixels and shadows are included in animation redraws")
+        pass("four real preview paths resume in place and close without recording drinks")
+
+        for edge in ReminderEdge.allCases {
+            try expect(desktop.start(entrance: ReminderEntrance(edge: edge, position: 0.65)),
+                       "\(edge) reminder could not open")
+            spin(ReminderScene.descentDuration + 0.15)
+            try expect(desktop.buttonPanels.count == 3 && desktop.blockerPanels.filter(\.isVisible).count == 4,
+                       "\(edge) reminder controls or bubble blockers are missing")
+            let previous = confirmations
+            desktop.confirmDrink()
+            desktop.confirmDrink()
+            desktop.acknowledge()
+            try expect(confirmations == previous + 1 && desktop.isActive && !desktop.isAwaitingAcknowledgment,
+                       "\(edge) confirmation was duplicated or skipped the exit animation")
+            spin(ReminderScene.acknowledgmentDuration + ReminderScene.ascentDuration + 0.2)
+            try expect(!desktop.isActive, "\(edge) exit left desktop windows active")
+        }
+        try expect(finishes == ReminderEdge.allCases.count, "A directional exit never called completion")
+        pass("four real reminder paths confirm once and close after their exit animation")
     }
 
     /// Missed notifications: the display slept without screensDidSleep, and
@@ -501,6 +588,7 @@ private enum BigWaterSessionChecks {
             checks.scenario("daily story", checks.dailyStory)
             checks.scenario("saved state from other builds", checks.storageScenario)
             checks.scenario("overlay timing and input", checks.overlayScenario)
+            checks.scenario("four screen-edge entrances", checks.directionalOverlayScenario)
             checks.scenario("system state and menu actions", checks.systemScenario)
             checks.scenario("drink confirmation and deduplication", checks.drinkConfirmationScenario)
             if checks.failures.isEmpty {

@@ -15,6 +15,17 @@ struct OverlayButtonSpec {
 }
 
 enum OverlayControls {
+    /// Include the fixed badge and its 2pt shadow when an animation frame is
+    /// repainted. Keeping it in the previous frame also clears it on departure.
+    static func animatedPaintedRegions(in scene: ReminderScene, previewBadge: CGRect?) -> [CGRect] {
+        var regions = SceneRenderer.paintedRegions(of: scene)
+        if let previewBadge {
+            regions.append(CGRect(x: previewBadge.minX, y: previewBadge.minY,
+                                  width: previewBadge.width + 2, height: previewBadge.height + 2).integral)
+        }
+        return regions
+    }
+
     static func animatedButtons(in scene: ReminderScene, visibleBounds: CGRect,
                                 isPreview: Bool) -> (buttons: [OverlayButtonSpec], badge: CGRect?) {
         guard scene.phase == .reminding else { return ([], nil) }

@@ -38,7 +38,7 @@ final class OverlayController {
 
     @discardableResult
     func start(appearance: ReminderAppearance = .init(), style: ReminderStyle = .animated,
-               isPreview: Bool = false) -> Bool {
+               isPreview: Bool = false, entrance: ReminderEntrance = .random()) -> Bool {
         guard !isActive, let selected = preferredScreen() else { return false }
         self.screen = selected
         self.style = style
@@ -46,7 +46,8 @@ final class OverlayController {
         self.actionInvoked = false
         self.scene = ReminderScene(viewport: selected.frame.size,
                                    topInset: topInset(for: selected), appearance: appearance,
-                                   isPreview: isPreview)
+                                   isPreview: isPreview, entrance: entrance,
+                                   visibleBounds: localVisibleBounds(for: selected))
         let panel = makePanel(frame: selected.frame, ignoresMouse: true)
         panel.title = isPreview ? "喝水提醒预览" : "喝水提醒"
         let view = AnimationCanvas(frame: CGRect(origin: .zero, size: selected.frame.size))
@@ -152,7 +153,8 @@ final class OverlayController {
             return
         }
         screen = selected
-        scene?.resize(to: selected.frame.size, topInset: topInset(for: selected))
+        scene?.resize(to: selected.frame.size, topInset: topInset(for: selected),
+                      visibleBounds: localVisibleBounds(for: selected))
         canvasPanel?.setFrame(selected.frame, display: true)
         updateWindows()
     }
@@ -257,7 +259,8 @@ final class OverlayController {
         canvas?.isPreview = isPreview
         canvas?.isCompact = style == .compact
         canvas?.scene = self.scene
-        let painted = style == .animated ? SceneRenderer.paintedRegions(of: self.scene ?? scene) : []
+        let painted = style == .animated
+            ? OverlayControls.animatedPaintedRegions(in: self.scene ?? scene, previewBadge: previewBadge) : []
         if fullRedraw || style != .animated || lastPaintedRegions.isEmpty {
             canvas?.needsDisplay = true
         } else {

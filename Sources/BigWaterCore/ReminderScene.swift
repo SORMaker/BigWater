@@ -5,6 +5,27 @@ public enum ReminderPhase: String {
     case descending, reminding, acknowledging, ascending, finished
 }
 
+public enum ReminderEdge: String, CaseIterable {
+    case top, bottom, left, right
+}
+
+/// Picked once per reminder, so resizing or resuming never rerolls its path.
+public struct ReminderEntrance: Equatable {
+    public let edge: ReminderEdge
+    /// Position along the usable part of the edge, from left/top to right/bottom.
+    public let position: Double
+
+    public init(edge: ReminderEdge = .top, position: Double = 0.72) {
+        self.edge = edge
+        self.position = position.isFinite ? min(max(position, 0), 1) : 0.5
+    }
+
+    public static func random() -> Self {
+        Self(edge: ReminderEdge.allCases.randomElement() ?? .top,
+             position: Double.random(in: 0...1))
+    }
+}
+
 public struct FlyingBottle {
     public var position: CGPoint
     public var velocity: CGVector
@@ -34,6 +55,8 @@ public struct ReminderScene {
 
     public private(set) var viewport: CGSize
     public private(set) var topInset: Double
+    public private(set) var visibleBounds: CGRect
+    public let entrance: ReminderEntrance
     public private(set) var phase: ReminderPhase = .descending
     public let appearance: ReminderAppearance
     /// A settings-page preview: it looks the same but records nothing.
@@ -47,16 +70,44 @@ public struct ReminderScene {
     private var retirementStart = CGPoint.zero
 
     public init(viewport: CGSize, topInset: Double = 24,
-                appearance: ReminderAppearance = .init(), isPreview: Bool = false) {
+                appearance: ReminderAppearance = .init(), isPreview: Bool = false,
+                entrance: ReminderEntrance = .init(), visibleBounds: CGRect? = nil) {
         self.viewport = viewport
         self.topInset = topInset
         self.appearance = appearance
         self.isPreview = isPreview
+        self.entrance = entrance
+        self.visibleBounds = visibleBounds ?? CGRect(x: 0, y: topInset, width: viewport.width,
+                                                     height: max(0, viewport.height - topInset))
     }
 
     public var target: CGPoint {
-        CGPoint(x: (viewport.width * 0.72 / 4).rounded() * 4,
-                y: min(topInset + 180, viewport.height * 0.38))
+        // Leave room for the sprite, the bubble to its inward side and the
+        // fixed buttons below it, including a Dock on any screen edge.
+        let bounds = visibleBounds
+        let minX = bounds.minX + min(120, bounds.width / 2)
+        let maxX = max(minX, bounds.maxX - 120)
+        let minY = bounds.minY + min(100, bounds.height / 2)
+        let maxY = max(minY, bounds.maxY - 164)
+        let alongX = minX + (maxX - minX) * entrance.position
+        let alongY = minY + (maxY - minY) * entrance.position
+        let point: CGPoint
+        switch entrance.edge {
+        case .top: point = CGPoint(x: alongX, y: min(max(bounds.minY + 180, minY), maxY))
+        case .bottom: point = CGPoint(x: alongX, y: maxY)
+        case .left: point = CGPoint(x: minX, y: alongY)
+        case .right: point = CGPoint(x: maxX, y: alongY)
+        }
+        return CGPoint(x: (point.x / 4).rounded() * 4, y: (point.y / 4).rounded() * 4)
+    }
+
+    public var usesRope: Bool { entrance.edge == .top }
+    public var facesLeft: Bool {
+        switch entrance.edge {
+        case .left: return false
+        case .right: return true
+        case .top, .bottom: return entrance.position > 0.5
+        }
     }
 
     public var throwCycle: Double {
@@ -68,14 +119,17 @@ public struct ReminderScene {
         case .descending:
             let t = min(phaseTime / Self.descentDuration, 1)
             let ease = 1 - pow(1 - t, 3)
-            return CGPoint(x: target.x + sin(t * .pi * 2) * 8,
-                           y: -80 + (target.y + 80) * ease)
+            let start = offscreenPoint(alignedWith: target)
+            let sway = sin(t * .pi * 2) * 8
+            let horizontal = entrance.edge == .left || entrance.edge == .right
+            return CGPoint(x: start.x + (target.x - start.x) * ease + (horizontal ? 0 : sway),
+                           y: start.y + (target.y - start.y) * ease + (horizontal ? sway : 0))
         case .reminding:
             // Only Claude throws, so only Claude recoils.
             let recoil = appearance.character == .claude
                 && throwCycle > Self.releaseTime && throwCycle < 0.84
                 ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
-            return CGPoint(x: target.x - recoil + sin(phaseTime * 2.1) * 3,
+            return CGPoint(x: target.x + (facesLeft ? recoil : -recoil) + sin(phaseTime * 2.1) * 3,
                            y: target.y + sin(phaseTime * 3.2) * 3)
         case .acknowledging:
             return CGPoint(x: retirementStart.x, y: retirementStart.y - sin(phaseTime * .pi / 0.55) * 5)
@@ -85,16 +139,29 @@ public struct ReminderScene {
             let step = floor(t * 7)
             let part = t * 7 - step
             let pull = min(part / 0.64, 1)
-            let progress = min((step + pull * pull * (3 - 2 * pull)) / 7, 1)
-            return CGPoint(x: retirementStart.x + sin(t * .pi * 14) * 3,
-                           y: retirementStart.y - (retirementStart.y + 100) * progress)
+            let progress = usesRope ? min((step + pull * pull * (3 - 2 * pull)) / 7, 1)
+                : t * t * (3 - 2 * t)
+            let end = offscreenPoint(alignedWith: retirementStart)
+            let horizontal = entrance.edge == .left || entrance.edge == .right
+            let sway = sin(t * .pi * 14) * 3
+            return CGPoint(x: retirementStart.x + (end.x - retirementStart.x) * progress + (horizontal ? 0 : sway),
+                           y: retirementStart.y + (end.y - retirementStart.y) * progress + (horizontal ? sway : 0))
         case .finished:
-            return CGPoint(x: target.x, y: -100)
+            return offscreenPoint(alignedWith: target)
+        }
+    }
+
+    private func offscreenPoint(alignedWith point: CGPoint) -> CGPoint {
+        switch entrance.edge {
+        case .top: return CGPoint(x: point.x, y: -100)
+        case .bottom: return CGPoint(x: point.x, y: viewport.height + 100)
+        case .left: return CGPoint(x: -110, y: point.y)
+        case .right: return CGPoint(x: viewport.width + 110, y: point.y)
         }
     }
 
     public var isInteractive: Bool { phase == .descending || phase == .reminding }
-    public var isClimbing: Bool { phase == .ascending }
+    public var isClimbing: Bool { phase == .ascending && usesRope }
     public var hasAcknowledged: Bool { phase == .acknowledging || phase == .ascending || phase == .finished }
 
     @discardableResult
@@ -107,11 +174,14 @@ public struct ReminderScene {
         return true
     }
 
-    public mutating func resize(to size: CGSize, topInset: Double) {
-        let dx = (size.width - viewport.width) * 0.72
-        retirementStart.x += dx
+    public mutating func resize(to size: CGSize, topInset: Double, visibleBounds: CGRect? = nil) {
+        let oldTarget = target
         viewport = size
         self.topInset = topInset
+        self.visibleBounds = visibleBounds ?? CGRect(x: 0, y: topInset, width: size.width,
+                                                     height: max(0, size.height - topInset))
+        retirementStart.x += target.x - oldTarget.x
+        retirementStart.y += target.y - oldTarget.y
     }
 
     public mutating func advance(by elapsed: Double) {
@@ -157,11 +227,12 @@ public struct ReminderScene {
             bottles[index].angle += bottles[index].spin * dt
         }
 
-        for bottle in bottles where bottle.position.y > viewport.height - 25 {
-            splash(at: CGPoint(x: min(max(bottle.position.x, 20), viewport.width - 20),
-                               y: viewport.height - 18))
+        let floor = min(viewport.height, visibleBounds.maxY)
+        for bottle in bottles where bottle.position.y > floor - 25 {
+            splash(at: CGPoint(x: min(max(bottle.position.x, visibleBounds.minX + 20), visibleBounds.maxX - 20),
+                               y: floor - 18))
         }
-        bottles.removeAll { $0.position.y > viewport.height - 25 || $0.age > 5 }
+        bottles.removeAll { $0.position.y > floor - 25 || $0.age > 5 }
 
         for index in particles.indices {
             particles[index].age += dt
@@ -175,14 +246,15 @@ public struct ReminderScene {
     private mutating func throwBottle() {
         guard appearance.character == .claude else { return }
         let variation = throwCount % 4
-        let velocities = [-245.0, 90.0, -145.0, 155.0]
+        let velocities = [245.0, 90.0, 145.0, 155.0]
         let spins = [-2.8, 2.1, -1.6, 2.9]
         let point = characterPosition
+        let direction = facesLeft ? -1.0 : 1.0
         bottles.append(FlyingBottle(
-            position: CGPoint(x: point.x + 54, y: point.y + 12),
-            velocity: CGVector(dx: velocities[variation], dy: -130 - Double(variation) * 12),
-            angle: -0.4,
-            spin: spins[variation]
+            position: CGPoint(x: point.x + direction * 54, y: point.y + 12),
+            velocity: CGVector(dx: direction * velocities[variation], dy: -130 - Double(variation) * 12),
+            angle: direction * -0.4,
+            spin: direction * spins[variation]
         ))
         throwCount += 1
     }

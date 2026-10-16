@@ -363,19 +363,32 @@ struct ReminderChecks {
 
     func paintedRegionsCoverEveryDrawnPixel() throws {
         for character in ReminderCharacter.allCases {
-            var scene = ReminderScene(viewport: CGSize(width: 640, height: 420),
-                                      appearance: ReminderAppearance(character: character))
-            var steps = [0.2, 0.9, 0.95, 0.6, 0.35, 0.45, 0.7, 1.1, 0.3, 0.5, 0.25, 0.8]
-            var frame = 0
-            while scene.phase != .finished, !steps.isEmpty {
-                scene.advance(by: steps.removeFirst())
-                frame += 1
-                if frame == 9 { scene.acknowledge() }
-                let regions = SceneRenderer.paintedRegions(of: scene)
-                try eachPixel(of: scene) { x, y, alpha in
-                    let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
-                    if alpha > 0 && !regions.contains(where: { $0.contains(point) }) {
-                        throw CheckFailure(description: "\(character) \(scene.phase) painted (\(x), \(y)) outside its redraw bounds")
+            for edge in ReminderEdge.allCases {
+                var scene = ReminderScene(viewport: CGSize(width: 640, height: 420),
+                                          appearance: ReminderAppearance(character: character),
+                                          entrance: ReminderEntrance(edge: edge, position: edge == .top ? 0 : 1),
+                                          visibleBounds: CGRect(x: 40, y: 24, width: 600, height: 320))
+                var steps = [0.2, 0.9, 0.95, 0.6, 0.35, 0.45, 0.7, 1.1, 0.3, 0.5, 0.25, 0.8]
+                var frame = 0
+                while scene.phase != .finished, !steps.isEmpty {
+                    scene.advance(by: steps.removeFirst())
+                    frame += 1
+                    if frame == 9 { scene.acknowledge() }
+                    let regions = SceneRenderer.paintedRegions(of: scene)
+                    let hits = PixelArt.characterHitRegions(in: scene)
+                    let bounds = scene.visibleBounds
+                    try expect(hits.allSatisfy { bounds.contains($0) }, "Character input escaped the display")
+                    try eachPixel(of: scene) { x, y, alpha in
+                        let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+                        if alpha > 0 && !bounds.contains(point) {
+                            throw CheckFailure(description: "\(edge) drew over the Dock or menu bar at (\(x), \(y))")
+                        }
+                        if alpha > 0 && !regions.contains(where: { $0.contains(point) }) {
+                            throw CheckFailure(description: "\(character) \(edge) \(scene.phase) painted (\(x), \(y)) outside its redraw bounds")
+                        }
+                        if alpha < 255 && hits.contains(where: { $0.contains(point) }) {
+                            throw CheckFailure(description: "\(character) \(edge) has an invisible click target at (\(x), \(y))")
+                        }
                     }
                 }
             }
@@ -387,15 +400,136 @@ struct ReminderChecks {
     }
 
     func speechBubbleClickRegionsAreFullyPainted() throws {
-        var scene = ReminderScene(viewport: CGSize(width: 900, height: 600))
-        try expect(SceneRenderer.speechRegions(for: scene).isEmpty, "Hidden bubble blocks clicks")
-        scene.advance(by: 2.3)
-        let regions = SceneRenderer.speechRegions(for: scene)
-        try expect(regions.count == 2, "Visible bubble has no click regions")
-        try eachPixel(of: scene) { x, y, alpha in
-            let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
-            if alpha < 255 && regions.contains(where: { $0.contains(point) }) {
-                throw CheckFailure(description: "Bubble click region is not painted at (\(x), \(y))")
+        for edge in ReminderEdge.allCases {
+            var scene = ReminderScene(viewport: CGSize(width: 640, height: 420),
+                                      entrance: ReminderEntrance(edge: edge, position: 0))
+            try expect(SceneRenderer.speechRegions(for: scene).isEmpty, "Hidden bubble blocks clicks")
+            scene.advance(by: 2.3)
+            let regions = SceneRenderer.speechRegions(for: scene)
+            try expect(regions.count == 4, "Visible bubble body or tail has no click regions")
+            try eachPixel(of: scene) { x, y, alpha in
+                let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+                if alpha < 255 && regions.contains(where: { $0.contains(point) }) {
+                    throw CheckFailure(description: "Bubble click region is not painted at (\(x), \(y))")
+                }
+            }
+        }
+    }
+
+    func allEdgesEnterThrowAndDepart() throws {
+        let size = CGSize(width: 900, height: 600)
+        let visible = CGRect(x: 68, y: 32, width: 832, height: 492)
+        func outside(_ point: CGPoint, edge: ReminderEdge) -> Bool {
+            switch edge {
+            case .top: return point.y < -64
+            case .bottom: return point.y > size.height + 64
+            case .left: return point.x < -64
+            case .right: return point.x > size.width + 64
+            }
+        }
+        for edge in ReminderEdge.allCases {
+            for position in [0.0, 0.5, 1.0] {
+                for character in ReminderCharacter.allCases {
+                    let entrance = ReminderEntrance(edge: edge, position: position)
+                    var scene = ReminderScene(viewport: size, appearance: ReminderAppearance(character: character),
+                                              entrance: entrance, visibleBounds: visible)
+                    try expect(outside(scene.characterPosition, edge: edge), "\(edge) did not start outside its edge")
+                    try expect(PixelArt.characterHitRegions(in: scene).isEmpty, "Off-screen character caught clicks")
+                    scene.advance(by: 0.35)
+                    let entered = scene.characterPosition
+                    try expect(!PixelArt.characterHitRegions(in: scene).isEmpty, "\(edge) never entered the screen")
+                    scene.advance(by: 2.4)
+                    let resting = scene.characterPosition
+                    try expect(scene.phase == .reminding && visible.contains(resting), "\(edge) has no usable resting point")
+                    try expect(PixelArt.characterHitRegions(in: scene).contains { $0.contains(resting) },
+                               "Mirrored or moving character center cannot be clicked")
+                    let bubble = SceneRenderer.speechRegions(for: scene)
+                    try expect(bubble.count == 4 && bubble.allSatisfy { visible.contains($0) }, "\(edge) bubble escaped the usable display")
+                    if character == .claude {
+                        try expect(!scene.bottles.isEmpty, "\(edge) Claude did not throw")
+                        try expect(scene.bottles.allSatisfy { scene.facesLeft ? $0.velocity.dx < 0 : $0.velocity.dx > 0 },
+                                   "\(edge) threw toward its outer edge")
+                    } else {
+                        try expect(scene.bottles.isEmpty, "Droplet started throwing Claude's bottles")
+                    }
+                    switch edge {
+                    case .top: try expect(resting.y > entered.y, "Top arrival went upward")
+                    case .bottom: try expect(resting.y < entered.y, "Bottom arrival went downward")
+                    case .left: try expect(resting.x > entered.x, "Left arrival went left")
+                    case .right: try expect(resting.x < entered.x, "Right arrival went right")
+                    }
+                    let previousThrows = scene.throwCount
+                    try expect(scene.acknowledge() && !scene.acknowledge(), "Directional click was ignored or repeated")
+                    scene.advance(by: 1.6)
+                    let leaving = scene.characterPosition
+                    switch edge {
+                    case .top: try expect(leaving.y < resting.y, "Top departure went downward")
+                    case .bottom: try expect(leaving.y > resting.y, "Bottom departure went upward")
+                    case .left: try expect(leaving.x < resting.x, "Left departure went right")
+                    case .right: try expect(leaving.x > resting.x, "Right departure went left")
+                    }
+                    scene.advance(by: 1.5)
+                    try expect(scene.phase == .finished && outside(scene.characterPosition, edge: edge),
+                               "\(edge) did not leave through its arrival edge")
+                    try expect(scene.throwCount == previousThrows && scene.bottles.isEmpty && scene.particles.isEmpty,
+                               "Directional departure kept animation objects alive")
+
+                    var early = ReminderScene(viewport: size, appearance: ReminderAppearance(character: character),
+                                              entrance: entrance, visibleBounds: visible)
+                    early.advance(by: 0.35)
+                    try expect(early.acknowledge(), "\(edge) early click was ignored")
+                    early.advance(by: 3)
+                    try expect(early.phase == .finished && early.throwCount == 0, "\(edge) early click failed to exit")
+                }
+            }
+        }
+    }
+
+    func entrancePositionSurvivesResize() throws {
+        for edge in ReminderEdge.allCases {
+            var targets: [CGPoint] = []
+            for position in [0.0, 0.5, 1.0] {
+                let entrance = ReminderEntrance(edge: edge, position: position)
+                var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900), entrance: entrance)
+                targets.append(scene.target)
+                scene.advance(by: 2.3)
+                scene.acknowledge()
+                let offset = CGPoint(x: scene.characterPosition.x - scene.target.x,
+                                     y: scene.characterPosition.y - scene.target.y)
+                let facesLeft = scene.facesLeft
+                let visible = CGRect(x: 80, y: 38, width: 560, height: 410)
+                scene.resize(to: CGSize(width: 640, height: 520), topInset: 38, visibleBounds: visible)
+                try expect(scene.entrance == entrance && scene.facesLeft == facesLeft,
+                           "Resize rerolled the entrance or flipped the character")
+                try expect(abs(scene.characterPosition.x - scene.target.x - offset.x) < 0.001
+                           && abs(scene.characterPosition.y - scene.target.y - offset.y) < 0.001,
+                           "Resize lost the departure's position relative to its resting point")
+                scene.advance(by: 3)
+                try expect(scene.phase == .finished, "Resize stranded a departing character")
+            }
+            let alongEdge = targets.map { edge == .top || edge == .bottom ? $0.x : $0.y }
+            try expect(alongEdge[0] < alongEdge[1] && alongEdge[1] < alongEdge[2],
+                       "Different positions along \(edge) used the same resting point")
+        }
+    }
+
+    func enteringCharactersNeverCatchDockClicks() throws {
+        let size = CGSize(width: 1_440, height: 900)
+        let dockLayouts = [CGRect(x: 0, y: 24, width: 1_440, height: 784),
+                           CGRect(x: 92, y: 24, width: 1_348, height: 876),
+                           CGRect(x: 0, y: 24, width: 1_348, height: 876)]
+        for visible in dockLayouts {
+            for edge in ReminderEdge.allCases {
+                for character in ReminderCharacter.allCases {
+                    var scene = ReminderScene(viewport: size, appearance: ReminderAppearance(character: character),
+                                              entrance: ReminderEntrance(edge: edge, position: 0.5), visibleBounds: visible)
+                    for _ in 0..<60 {
+                        scene.advance(by: 1.0 / 30)
+                        let hits = PixelArt.characterHitRegions(in: scene)
+                        try expect(hits.allSatisfy { visible.contains($0) },
+                                   "\(edge) intercepted a Dock or menu bar click during arrival")
+                    }
+                }
             }
         }
     }
@@ -499,8 +633,8 @@ struct ReminderChecks {
     func descendingHitRegionsStayOnTheirDisplay() throws {
         var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900))
         try expect(PixelArt.characterHitRegions(in: scene).isEmpty, "Off-screen Claude created visible input windows")
-        scene.advance(by: 0.15)
-        let bounds = CGRect(origin: .zero, size: scene.viewport)
+        scene.advance(by: 0.2)
+        let bounds = scene.visibleBounds
         let regions = PixelArt.characterHitRegions(in: scene)
         try expect(!regions.isEmpty, "Entering Claude has no visible hit regions")
         try expect(regions.allSatisfy { bounds.contains($0) }, "Input region escaped onto another display")
@@ -558,6 +692,9 @@ enum BigWaterChecks {
             ("weekend follows the locale", suite.weekendFollowsTheLocale),
             ("redraw regions cover every drawn pixel", suite.paintedRegionsCoverEveryDrawnPixel),
             ("speech bubble click regions are fully painted", suite.speechBubbleClickRegionsAreFullyPainted),
+            ("every edge enters, throws inward and departs through its origin", suite.allEdgesEnterThrowAndDepart),
+            ("edge positions and departure survive resizing", suite.entrancePositionSurvivesResize),
+            ("arrivals never catch Dock or menu bar clicks", suite.enteringCharactersNeverCatchDockClicks),
             ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),
             ("early click during descent", suite.earlyClickDuringDescent),
             ("bounded objects over a long reminder", suite.persistentReminderHasBoundedParticles),

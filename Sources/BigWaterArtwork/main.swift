@@ -106,6 +106,53 @@ func saveAnimation(to url: URL) throws {
     guard CGImageDestinationFinalize(destination) else { throw ArtworkError.cannotFinishGIF }
 }
 
+/// The same four paths as the desktop overlay, shown together for visual QA.
+func entranceFrame(_ scenes: [ReminderScene]) -> NSImage {
+    PixelArt.image(size: CGSize(width: 1_280, height: 840), backingScale: 1) { context in
+        let titles = ["TOP · 顶部沿绳滑下", "BOTTOM · 底部升起", "LEFT · 左侧滑入", "RIGHT · 右侧滑入"]
+        for (index, scene) in scenes.enumerated() {
+            context.saveGState()
+            context.translateBy(x: Double(index % 2) * 640, y: Double(index / 2) * 420)
+            context.clip(to: CGRect(origin: .zero, size: scene.viewport))
+            PixelArt.rect(context, 0, 0, 640, 420, WaterPalette.cream)
+            PixelArt.rect(context, 0, 0, 640, 2, WaterPalette.ropeLight)
+            PixelArt.rect(context, 0, 0, 2, 420, WaterPalette.ropeLight)
+            label(titles[index], at: CGPoint(x: 24, y: 18), size: 16, color: WaterPalette.ink)
+            SceneRenderer.draw(scene, in: context)
+            context.restoreGState()
+        }
+    }
+}
+
+func saveEntranceAnimation(to directory: URL) throws {
+    let count = 102
+    let fps = 12.0
+    let url = directory.appendingPathComponent("entrances.gif")
+    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString,
+                                                            count, nil) else {
+        throw ArtworkError.cannotCreateGIF
+    }
+    CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
+        [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+    var scenes = ReminderEdge.allCases.map {
+        ReminderScene(viewport: CGSize(width: 640, height: 420), topInset: 44,
+                      entrance: ReminderEntrance(edge: $0, position: 0.5))
+    }
+    for frame in 0..<count {
+        if frame == 67 {
+            for index in scenes.indices { scenes[index].acknowledge() }
+        }
+        let image = entranceFrame(scenes)
+        if frame == 30 { try savePNG(image, to: directory.appendingPathComponent("entrances.png")) }
+        guard let bitmap = image.representations.first as? NSBitmapImageRep,
+              let cgImage = bitmap.cgImage else { throw ArtworkError.cannotEncodeImage }
+        CGImageDestinationAddImage(destination, cgImage, [kCGImagePropertyGIFDictionary:
+            [kCGImagePropertyGIFDelayTime: 1 / fps]] as CFDictionary)
+        for index in scenes.indices { scenes[index].advance(by: 1 / fps) }
+    }
+    guard CGImageDestinationFinalize(destination) else { throw ArtworkError.cannotFinishGIF }
+}
+
 let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "dist/Artwork", isDirectory: true)
 let icons = output.appendingPathComponent("AppIcon.iconset", isDirectory: true)
 do {
@@ -117,6 +164,7 @@ do {
     try savePNG(storyboard(), to: output.appendingPathComponent("storyboard.png"))
     try savePNG(PixelArt.settingsBottle(), to: output.appendingPathComponent("bottle.png"))
     try saveAnimation(to: output.appendingPathComponent("animation.gif"))
+    try saveEntranceAnimation(to: output)
     print("Artwork: \(output.path)")
 } catch {
     fputs("Artwork export failed: \(error)\n", stderr)
