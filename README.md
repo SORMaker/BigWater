@@ -178,7 +178,7 @@ swift package resolve
 确认输出的公钥与 `Resources/Info.plist` 中的 `SUPublicEDKey` 一致。新发布者需安全迁移原有私钥，不能随意生成不同密钥替代。
 
 ```sh
-./Tools/release.sh --notes-file docs/releases/0.5.1.md
+./Tools/release.sh --notes-file docs/releases/0.5.2.md
 ```
 
 这会构建同时支持 Apple 芯片和 Intel 的 App，生成签名更新包及 `appcast.xml`，默认仅保存在 `dist/releases/`。检查后，在同一条命令后加上 `--publish`，即可验证并发布已准备的安装包。源码有变化的包不能直接发布；原有输出会保留。未提交的源码或未提供发布说明时，产物只会进入独立的 `dist/previews/` 目录，供本机测试。App 通过最新 Release 的 `appcast.xml` 获取更新；源码和编译检查不会启动更新器。
