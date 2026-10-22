@@ -47,8 +47,9 @@ final class SettingsModel: ObservableObject {
         set { change { $0.intervalHours = newValue } }
     }
 
-    var hoursText: String {
-        hours == hours.rounded() ? String(Int(hours)) : String(format: "%.1f", hours)
+    var intervalMinutes: Int {
+        get { Int((hours * 60).rounded()) }
+        set { hours = Double(newValue) / 60 }
     }
 
     func change(_ edit: (inout AppPreferences) -> Void) {
@@ -212,21 +213,38 @@ struct SettingsView: View {
 
     private var intervalRow: some View {
         HStack {
-            Text("提醒间隔（小时）").fontWeight(.medium)
+            Text("提醒间隔").fontWeight(.medium)
             Spacer()
-            HStack(spacing: 0) {
-                intervalButton("−", label: "减少提醒间隔", disabled: model.hours <= ReminderSchedule.minimumHours) {
-                    model.hours = max(ReminderSchedule.minimumHours, model.hours - 0.5)
+            HStack(spacing: 6) {
+                Picker("提醒间隔小时", selection: Binding(
+                    get: { model.intervalMinutes / 60 },
+                    set: { hour in
+                        model.intervalMinutes = hour * 60 + (hour == 24 ? 0 : model.intervalMinutes % 60)
+                    }
+                )) {
+                    ForEach(0...24, id: \.self) { hour in
+                        Text("\(hour)").tag(hour)
+                    }
                 }
-                Text(model.hoursText).font(.system(size: 20, weight: .medium, design: .monospaced))
-                    .frame(width: 48, height: 34)
-                    .accessibilityLabel("提醒间隔 \(model.hoursText) 小时")
-                intervalButton("+", label: "增加提醒间隔", disabled: model.hours >= ReminderSchedule.maximumHours) {
-                    model.hours = min(ReminderSchedule.maximumHours, model.hours + 0.5)
+                .frame(width: 62)
+                Text("小时")
+                Picker("提醒间隔分钟", selection: Binding(
+                    get: { model.intervalMinutes % 60 },
+                    set: { model.intervalMinutes = (model.intervalMinutes / 60) * 60 + $0 }
+                )) {
+                    ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { minute in
+                        Text(String(format: "%02d", minute)).tag(minute)
+                            .disabled(model.intervalMinutes < 60 && minute == 0)
+                    }
                 }
+                .frame(width: 62)
+                .disabled(model.intervalMinutes == 24 * 60)
+                Text("分钟")
             }
-            .background(.white.opacity(0.5))
-            .overlay(Rectangle().stroke(ink.opacity(0.13), lineWidth: 1))
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .monospacedDigit()
+            .controlSize(.regular)
         }
     }
 
@@ -336,21 +354,19 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             Text("作息时间").font(.system(size: 20, weight: .semibold))
-            Text("时段之间暂停计时，下一时段接着剩余时间继续。")
-                .font(.caption).foregroundStyle(ink.opacity(0.6))
             hoursRow(weekend: false)
             Toggle("周末使用单独作息", isOn: Binding(
                 get: { draftWeekendHours != nil },
-                set: { draftWeekendHours = $0 ? draftWeekdayHours : nil }
+                set: {
+                    draftWeekendHours = $0 ? draftWeekdayHours : nil
+                    saveHours()
+                }
             ))
             .toggleStyle(.switch).controlSize(.small)
             if draftWeekendHours != nil { hoursRow(weekend: true) }
             if let error = hoursDraftError ?? hoursEditMessage {
-                Text(error).font(.caption).foregroundStyle(clay)
+                Text(error).foregroundStyle(clay)
             }
-            Button("保存作息", action: saveHours)
-                .buttonStyle(.borderedProminent).tint(clay)
-                .disabled(hoursDraftError != nil)
         }
         .onAppear {
             draftWeekdayHours = model.preferences.weekdayHours
@@ -367,8 +383,11 @@ struct SettingsView: View {
             ForEach(hours.periods.indices, id: \.self) { index in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("时段 \(index + 1)").font(.caption).foregroundStyle(ink.opacity(0.6))
-                        Spacer()
+                        EditablePeriodTitle(
+                            name: periodNameBinding(weekend: weekend, index: index),
+                            placeholder: "时段 \(index + 1)",
+                            accessibilityLabel: "\(weekend ? "周末" : "平日")时段 \(index + 1)名称"
+                        )
                         if hours.periods.count > 1 {
                             Button { removePeriod(weekend: weekend, index: index) } label: {
                                 Image(systemName: "trash").frame(width: 24, height: 20)
@@ -413,12 +432,13 @@ struct SettingsView: View {
                 get: { time.wrappedValue % 60 },
                 set: { time.wrappedValue = (time.wrappedValue / 60) * 60 + $0 }
             )) {
-                // Display an existing custom minute until the user chooses a half hour.
-                if minute != 0 && minute != 30 {
+                // Keep a saved custom minute visible until a five-minute option is chosen.
+                if minute % 5 != 0 {
                     Text(String(format: "%02d", minute)).tag(minute).disabled(true)
                 }
-                Text("00").tag(0)
-                Text("30").tag(30)
+                ForEach(Array(stride(from: 0, to: 60, by: 5)), id: \.self) { minute in
+                    Text(String(format: "%02d", minute)).tag(minute)
+                }
             }
             .frame(width: 72)
             .disabled(hour == 24)
@@ -604,6 +624,22 @@ struct SettingsView: View {
             else { hours.periods[index].startMinutes = minutes }
             if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
             hoursEditMessage = nil
+            saveHours()
+        })
+    }
+
+    private func periodNameBinding(weekend: Bool, index: Int) -> Binding<String> {
+        Binding(get: {
+            let hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+            guard hours.periods.indices.contains(index) else { return "" }
+            return hours.periods[index].name
+        }, set: { name in
+            var hours = weekend ? (draftWeekendHours ?? draftWeekdayHours) : draftWeekdayHours
+            guard hours.periods.indices.contains(index) else { return }
+            hours.periods[index].name = name
+            if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
+            hoursEditMessage = nil
+            saveHours()
         })
     }
 
@@ -621,11 +657,13 @@ struct SettingsView: View {
 
     private func saveHours() {
         guard hoursDraftError == nil else { return }
+        let weekday = sortedHours(draftWeekdayHours)
+        let weekend = draftWeekendHours.map(sortedHours)
+        guard weekday != model.preferences.weekdayHours || weekend != model.preferences.weekendHours else { return }
         model.change {
-            $0.weekdayHours = sortedHours(draftWeekdayHours)
-            $0.weekendHours = draftWeekendHours.map(sortedHours)
+            $0.weekdayHours = weekday
+            $0.weekendHours = weekend
         }
-        if model.validationText == nil { showingHours = false }
     }
 
     private func removePeriod(weekend: Bool, index: Int) {
@@ -634,6 +672,7 @@ struct SettingsView: View {
         hours.periods.remove(at: index)
         if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
         hoursEditMessage = nil
+        saveHours()
     }
 
     private func addPeriod(weekend: Bool) {
@@ -651,15 +690,47 @@ struct SettingsView: View {
         hours.periods.append(ReminderPeriod(startMinutes: start, endMinutes: min(start + 120, gap.1)))
         if weekend { draftWeekendHours = hours } else { draftWeekdayHours = hours }
         hoursEditMessage = nil
+        saveHours()
     }
+}
 
-    private func intervalButton(_ symbol: String, label: String, disabled: Bool,
-                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(symbol).font(.system(size: 18, weight: .medium, design: .monospaced))
-                .foregroundStyle(disabled ? ink.opacity(0.2) : clay)
-                .frame(width: 30, height: 34).contentShape(Rectangle())
+private struct EditablePeriodTitle: View {
+    @Binding var name: String
+    let placeholder: String
+    let accessibilityLabel: String
+    @State private var isEditing = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Group {
+            if isEditing {
+                TextField(placeholder, text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .accessibilityLabel(accessibilityLabel)
+                    .onAppear {
+                        DispatchQueue.main.async { isFocused = true }
+                    }
+                    .onSubmit {
+                        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        isEditing = false
+                        isFocused = false
+                    }
+                    .onChange(of: isFocused) { focused in
+                        if !focused { isEditing = false }
+                    }
+            } else {
+                Button { isEditing = true } label: {
+                    Text(name.isEmpty ? placeholder : name)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("修改\(accessibilityLabel)：\(name.isEmpty ? placeholder : name)")
+            }
         }
-        .buttonStyle(.plain).disabled(disabled).accessibilityLabel(label)
+        .font(.system(size: 13, weight: .medium))
+        .frame(minHeight: 22)
     }
 }

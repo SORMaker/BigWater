@@ -174,6 +174,11 @@ struct HydrationHistoryView: View {
                            displayedComponents: [.date, .hourAndMinute])
                     .labelsHidden()
                     .datePickerStyle(.compact)
+                    .onChange(of: draftDate) { _ in saveCorrection() }
+                    .onSubmit {
+                        saveCorrection()
+                        if correctionError == nil { closeCorrection() }
+                    }
             }
             if let correctionError {
                 Text(correctionError)
@@ -182,9 +187,7 @@ struct HydrationHistoryView: View {
             }
             HStack(spacing: 14) {
                 Spacer()
-                Button("取消", action: cancelCorrection)
-                    .buttonStyle(.plain)
-                Button("保存") { saveCorrection(mode) }
+                Button("返回", action: closeCorrection)
                     .buttonStyle(.plain)
                     .foregroundStyle(blue)
                     .fontWeight(.medium)
@@ -193,6 +196,7 @@ struct HydrationHistoryView: View {
         .padding(12)
         .background(.white.opacity(0.58))
         .overlay(Rectangle().stroke(ink.opacity(0.14), lineWidth: 1))
+        .onDisappear { saveChangedCorrection() }
     }
 
     private func modeTitle(_ mode: EditorMode) -> String {
@@ -219,17 +223,28 @@ struct HydrationHistoryView: View {
         correctionError = nil
     }
 
-    private func cancelCorrection() {
+    private func closeCorrection() {
+        saveChangedCorrection()
         editorMode = nil
         correctionError = nil
     }
 
-    private func saveCorrection(_ mode: EditorMode) {
+    private func saveChangedCorrection() {
+        if case .add? = editorMode, draftDate == editorReferenceDate { return }
+        saveCorrection()
+    }
+
+    private func saveCorrection() {
+        guard let mode = editorMode else { return }
         let saved: Bool
         switch mode {
         case .add:
             saved = onAdd(draftDate)
         case .edit(let originalDate):
+            guard originalDate != draftDate else {
+                correctionError = nil
+                return
+            }
             saved = onEdit(originalDate, draftDate)
         }
         guard saved else {
@@ -238,7 +253,8 @@ struct HydrationHistoryView: View {
         }
         displayedMonth = HydrationMonth(containing: draftDate, calendar: calendar).start
         selectedDate = calendar.startOfDay(for: draftDate)
-        cancelCorrection()
+        editorMode = .edit(draftDate)
+        correctionError = nil
     }
 
     @ViewBuilder

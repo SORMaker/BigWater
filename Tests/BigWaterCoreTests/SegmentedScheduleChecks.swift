@@ -20,6 +20,7 @@ struct SegmentedScheduleChecks {
 
     static let checks: [(String, () throws -> Void)] = [
         ("segmented: legacy API and Codable migration", legacyAPIAndCodableMigration),
+        ("segmented: custom period names survive saving", namedPeriodsSurviveSaving),
         ("segmented: validate ordered non-overlapping periods", validatePeriods),
         ("segmented: count use and project reminders across gaps", countAndProjectAcrossGaps),
         ("segmented: re-offer pending reminders after gaps", reofferAfterGap),
@@ -73,6 +74,25 @@ struct SegmentedScheduleChecks {
                    "Unordered periods were accepted")
         try expect(DailyHours(periods: [ReminderPeriod(startMinutes: 1_380, endMinutes: 1_440)]).isValid,
                    "A period ending at midnight was rejected")
+    }
+
+    private static func namedPeriodsSurviveSaving() throws {
+        let morning = ReminderPeriod(startMinutes: 360, endMinutes: 720, name: "上午学习")
+        let afternoon = ReminderPeriod(startMinutes: 780, endMinutes: 1_080, name: "下午工作")
+        for namedHours in [DailyHours(periods: [morning]), DailyHours(periods: [morning, afternoon])] {
+            var preferences = AppPreferences()
+            preferences.weekdayHours = namedHours
+            preferences.weekendHours = DailyHours(periods: [
+                ReminderPeriod(startMinutes: 600, endMinutes: 1_200, name: "周末")
+            ])
+            let data = try JSONEncoder().encode(preferences)
+            let restored = try JSONDecoder().decode(AppPreferences.self, from: data).validated()
+            try expect(restored == preferences, "Saving discarded period names or changed their times")
+        }
+
+        let oldData = #"{"periods":[{"startMinutes":360,"endMinutes":720},{"startMinutes":780,"endMinutes":1080}],"startMinutes":360,"endMinutes":1080}"#.data(using: .utf8)!
+        let oldHours = try JSONDecoder().decode(DailyHours.self, from: oldData)
+        try expect(oldHours == periods, "Existing unnamed periods did not remain readable")
     }
 
     private static func countAndProjectAcrossGaps() throws {

@@ -132,7 +132,7 @@ struct ReminderChecks {
     func invalidPreferencesAndIntervalChange() throws {
         try expect(ReminderSchedule.validated(.nan) == 2, "NaN preference was accepted")
         try expect(ReminderSchedule.validated(.infinity) == 2, "Infinite preference was accepted")
-        try expect(ReminderSchedule.validated(-10) == 0.5, "Minimum interval is not enforced")
+        try expect(ReminderSchedule.validated(-10) == 5.0 / 60, "Minimum interval is not enforced")
         try expect(ReminderSchedule.validated(30) == 24, "Maximum interval is not enforced")
         var schedule = ReminderSchedule(now: now, uptime: 0, calendar: calendar)
         schedule.setInterval(hours: 1, now: now.addingTimeInterval(400), uptime: 400, calendar: calendar)
@@ -142,6 +142,27 @@ struct ReminderChecks {
         try expect(schedule.nextReminderAt == nil && schedule.remainingTime == 1_300, "Setting interval restarted a sleeping countdown")
         schedule.update(at: now.addingTimeInterval(1_000), uptime: 1_000, isSessionActive: true, calendar: calendar)
         try expect(schedule.nextReminderAt == now.addingTimeInterval(2_300), "Sleeping interval edit did not apply at wake")
+    }
+
+    func minuteIntervalsKeepPrecisionAndCountedUse() throws {
+        for minutes in [5, 15, 45, 75, 1_435, 1_440] {
+            var preferences = AppPreferences()
+            preferences.intervalHours = Double(minutes) / 60
+            let saved = try JSONEncoder().encode(preferences)
+            let restored = try JSONDecoder().decode(AppPreferences.self, from: saved).validated()
+            try expect(restored.intervalHours == preferences.intervalHours,
+                       "Saving rounded the custom interval of \(minutes) minutes")
+            var schedule = ReminderSchedule(hours: restored.intervalHours, now: now, uptime: 0, calendar: calendar)
+            let duration = TimeInterval(minutes * 60)
+            try expect(abs(schedule.remainingTime - duration) < 0.000_001,
+                       "Countdown did not use the selected minute interval")
+            schedule.update(at: now.addingTimeInterval(30), uptime: 30, calendar: calendar)
+            schedule.setInterval(hours: Double(minutes + 5) / 60,
+                                 now: now.addingTimeInterval(30), uptime: 30, calendar: calendar)
+            let expected = TimeInterval(min(minutes + 5, 1_440) * 60 - 30)
+            try expect(abs(schedule.remainingTime - expected) < 0.000_001,
+                       "Custom interval edit discarded counted use")
+        }
     }
 
     func invalidDecodedPreferencesAreSanitized() throws {
@@ -745,6 +766,7 @@ enum BigWaterChecks {
             ("click resets interval without queued reminders", suite.nextIntervalStartsAtClickAndDoesNotQueue),
             ("interval changes during reminders", suite.intervalChangeDuringReminderWaitsForClick),
             ("invalid preferences and idle interval changes", suite.invalidPreferencesAndIntervalChange),
+            ("minute interval precision and counted use", suite.minuteIntervalsKeepPrecisionAndCountedUse),
             ("decoded preferences are sanitized", suite.invalidDecodedPreferencesAreSanitized),
             ("weekday and weekend reminder windows", suite.weekdayAndWeekendWindows),
             ("same-day snapshot restore excludes offline time", suite.snapshotRestoresSameDayWithoutOfflineTime),

@@ -5,10 +5,30 @@ import Foundation
 public struct ReminderPeriod: Codable, Equatable {
     public var startMinutes: Int
     public var endMinutes: Int
+    public var name: String
 
-    public init(startMinutes: Int, endMinutes: Int) {
+    private enum CodingKeys: String, CodingKey {
+        case startMinutes, endMinutes, name
+    }
+
+    public init(startMinutes: Int, endMinutes: Int, name: String = "") {
         self.startMinutes = startMinutes
         self.endMinutes = endMinutes
+        self.name = name
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        startMinutes = try values.decode(Int.self, forKey: .startMinutes)
+        endMinutes = try values.decode(Int.self, forKey: .endMinutes)
+        name = values.lenientValue(String.self, forKey: .name) ?? ""
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(startMinutes, forKey: .startMinutes)
+        try values.encode(endMinutes, forKey: .endMinutes)
+        if !name.isEmpty { try values.encode(name, forKey: .name) }
     }
 }
 
@@ -83,7 +103,7 @@ public struct DailyHours: Codable, Equatable {
 
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        if periods.count == 1 {
+        if periods.count == 1 && periods[0].name.isEmpty {
             try values.encode(periods[0].startMinutes, forKey: .startMinutes)
             try values.encode(periods[0].endMinutes, forKey: .endMinutes)
         } else {

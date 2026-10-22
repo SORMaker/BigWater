@@ -4,7 +4,7 @@ import Foundation
 /// remains outstanding until acknowledged, snoozed, paused, or the day ends.
 public struct ReminderSchedule {
     public static let defaultHours = 2.0
-    public static let minimumHours = 0.5
+    public static let minimumHours = 5.0 / 60
     public static let maximumHours = 24.0
 
     public private(set) var intervalHours: Double
