@@ -1,5 +1,16 @@
 # 验证记录
 
+## 2026-10-22 · 0.5.2 正式发布
+
+| 验证层 | 结果与证据 |
+| --- | --- |
+| 发布源码 | 功能提交 `524c638`，发布提交 `db8fba6cdadf2759e74680908055e5edf6bb8b56`；版本 `0.5.2`，构建号 `9`。包含五分钟档位、作息时段命名，以及作息和喝水记录自动保存 |
+| 相关逻辑 | `BigWaterChecks` 定向检查 4/4 通过：`minute interval`、`custom period names`、`legacy API and Codable migration`、`invalid preferences and idle interval changes`；覆盖间隔精度与已计时间保留、名称持久化、旧配置兼容和间隔边界 |
+| 通用包与签名 | `./Tools/release.sh --notes-file docs/releases/0.5.2.md` 从干净提交构建 `x86_64 arm64` 通用包；ZIP 解包后的执行权限、框架符号链接、严格递归代码签名及版本信息检查通过，安装包与 appcast 的 Ed25519 签名验证通过 |
+| 正式发布 | [v0.5.2 已发布](https://github.com/SORMaker/BigWater/releases/tag/v0.5.2)，为最新正式版本，包含 `BigWater-0.5.2.zip` 和 `appcast.xml`；远端标签准确指向发布提交 |
+| 线上更新与下载 | 匿名访问 `releases/latest/download/appcast.xml` 返回 `0.5.2`、构建号 `9` 和正确的版本化 ZIP 地址；实际下载 ZIP 为 2,161,574 字节。线上 appcast 与 ZIP 均通过签名验证，并与准备好的本地产物逐字节一致 |
+| 验证范围 | 本轮聚焦改动相关逻辑、通用包和线上更新入口；未重复运行动画及完整桌面会话检查，未重跑 Sparkle 安装与自动重启流程 |
+
 ## 2026-10-16 · 0.5.1 正式发布
 
 | 验证层 | 结果与证据 |
