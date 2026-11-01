@@ -865,13 +865,19 @@ private enum BigWaterSessionChecks {
                     ("feature pending reminder with settings first", checks.featurePendingSettingsFirstScenario)
                 ]
                 let arguments = CommandLine.arguments
-                let filter: String
+                var selected = scenarios
                 if let index = arguments.firstIndex(of: "--filter") {
-                    guard arguments.indices.contains(index + 1) else { exit(2) }
-                    filter = arguments[index + 1]
-                } else { filter = "" }
-                let selected = scenarios.filter { $0.0.localizedCaseInsensitiveContains(filter) }
-                guard !selected.isEmpty else { exit(2) }
+                    guard arguments.indices.contains(index + 1) else {
+                        fputs("Usage: BigWaterSessionChecks --features [--filter text]\n", stderr)
+                        exit(2)
+                    }
+                    // An empty string never "contains" a match, so only filter when asked.
+                    selected = scenarios.filter { $0.0.localizedCaseInsensitiveContains(arguments[index + 1]) }
+                }
+                guard !selected.isEmpty else {
+                    fputs("No feature scenarios matched the filter.\n", stderr)
+                    exit(2)
+                }
                 for (name, body) in selected { checks.scenario(name, body) }
                 if !checks.failures.isEmpty { exit(1) }
                 print("\(checks.passed) feature session checks passed (no animation scenarios)")
