@@ -46,6 +46,11 @@ list (session). Session checks open real overlay windows for a moment.
 ## Changes
 
 - Behavior changes come with a check that fails without them.
+- Run checks in proportion to the change. While iterating, `--filter` to the
+  group you touched. Run the full core suite once before committing code, and
+  the session checks only when app, overlay or settings behavior changed.
+  Docs-only changes, and a tree that already passed (a fast-forward merge, a
+  reworded commit), need no rerun.
 - README describes behavior for users; keep it in sync with what ships.
 - `VERIFICATION.md` records what was actually verified for each release,
   including what was not.
