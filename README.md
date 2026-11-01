@@ -194,7 +194,7 @@ Sparkle 及所含组件的许可见 [Resources/Sparkle-LICENSE](Resources/Sparkl
 | `Sources/BigWaterArtwork` | 用同一套绘制代码生成图标、分镜图和 GIF |
 | `Tests/` | 核心检查和会话检查 |
 
-`REVIEW.md` 是一份代码审查记录，`VERIFICATION.md` 是各版本的验证记录。
+`REVIEW.md` 是一份代码审查记录，`VERIFICATION.md` 是各版本的验证记录，`CLAUDE.md` 是给 Claude Code 的项目说明。
 
 ## 已知限制
 
