@@ -171,6 +171,8 @@ struct SettingsView: View {
             pauseControls
         }
         Divider()
+        awayOptions
+        Divider()
         reminderOptions
         Divider()
         VStack(alignment: .leading, spacing: 10) {
@@ -303,6 +305,22 @@ struct SettingsView: View {
     private func pause() {
         guard let minutes = pauseDuration else { return }
         model.onPause?(minutes)
+    }
+
+    private var awayOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("离开座位").fontWeight(.medium)
+            Toggle("离开时暂停计时", isOn: preferenceBinding(\.pauseWhenAway))
+                .toggleStyle(.switch).controlSize(.small)
+            if model.preferences.pauseWhenAway {
+                Picker("无操作超过", selection: preferenceBinding(\.awayMinutes)) {
+                    ForEach(AppPreferences.awayMinuteOptions, id: \.self) { Text("\($0) 分钟").tag($0) }
+                }
+            }
+            Text("键盘、鼠标和触控板一段时间没有操作就算离开，回来后接着剩余时间继续。播放视频或演示时照常计时。")
+                .font(.caption).foregroundStyle(ink.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var reminderOptions: some View {

@@ -208,6 +208,15 @@ public struct AppPreferences: Codable, Equatable {
     public var appearance: ReminderAppearance = .init()
     public var placement: ReminderPlacement = .init()
     public var showMenuBarCountdown: Bool = false
+    public var pauseWhenAway: Bool = true
+    public var awayMinutes: Int = 5
+
+    public static let awayMinuteOptions = [3, 5, 10, 15]
+
+    /// Idle input time after which the countdown stops, or nil when off.
+    public var awayThreshold: TimeInterval? {
+        pauseWhenAway ? TimeInterval(awayMinutes) * 60 : nil
+    }
 
     public init() {}
 
@@ -225,6 +234,8 @@ public struct AppPreferences: Codable, Equatable {
         placement = values.lenientValue(ReminderPlacement.self, forKey: .placement) ?? defaults.placement
         showMenuBarCountdown = values.lenientValue(Bool.self, forKey: .showMenuBarCountdown)
             ?? defaults.showMenuBarCountdown
+        pauseWhenAway = values.lenientValue(Bool.self, forKey: .pauseWhenAway) ?? defaults.pauseWhenAway
+        awayMinutes = values.lenientValue(Int.self, forKey: .awayMinutes) ?? defaults.awayMinutes
     }
 
     /// True when the countdown counts the same way under both settings.
@@ -239,6 +250,7 @@ public struct AppPreferences: Codable, Equatable {
         result.intervalHours = ReminderSchedule.validated(intervalHours)
         if !result.weekdayHours.isValid { result.weekdayHours = .init() }
         if let weekendHours, !weekendHours.isValid { result.weekendHours = nil }
+        if !Self.awayMinuteOptions.contains(awayMinutes) { result.awayMinutes = AppPreferences().awayMinutes }
         return result
     }
 }

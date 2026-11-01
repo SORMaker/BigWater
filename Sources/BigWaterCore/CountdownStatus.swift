@@ -31,6 +31,10 @@ public struct CountdownStatus: Equatable {
             title = "等待你的确认"
             replacement = "喝口水吧"
             detail = "喝水后点提醒里或下面的按钮，也可以稍后再提醒"
+        } else if schedule.isAway {
+            title = "离开暂停"
+            replacement = nil
+            detail = "回来使用键盘或鼠标后接着剩余时间继续计时"
         } else if let next = schedule.nextReminderAt {
             title = schedule.isSnoozed ? "稍后提醒" : "距离下次提醒"
             replacement = nil

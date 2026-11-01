@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import SwiftUI
 import OSLog
 import ServiceManagement
@@ -10,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // State marked private(set) is read by the session checks via @testable.
     private static let loginPreferenceKey = "launchAtLogin"
     static let presentationRetryDelay: TimeInterval = 30
+    /// Nothing announces a return to the keyboard, so an away countdown polls.
+    static let awayPollInterval: TimeInterval = 5
     private let logger = Logger(subsystem: "com.oil.bigwater", category: "reminders")
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
@@ -37,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let dateNow: () -> Date
     private let uptimeNow: () -> TimeInterval
     private let systemState: () -> SystemState
+    private let idleTime: () -> TimeInterval
     private let preferences: UserDefaults
     private lazy var storage = AppStorage(defaults: preferences)
 
@@ -57,15 +61,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return SystemState(isSessionActive: session?[kCGSessionOnConsoleKey as String] as? Bool ?? true,
                                isScreenAwake: screenAwake)
         }
+
+        /// Seconds since the last keyboard, pointer or trackpad input. A video
+        /// or slideshow that keeps the display awake counts as use.
+        static func idleTime() -> TimeInterval {
+            var status: Unmanaged<CFDictionary>?
+            if IOPMCopyAssertionsStatus(&status) == kIOReturnSuccess,
+               let assertions = status?.takeRetainedValue() as? [String: Int],
+               assertions[kIOPMAssertPreventUserIdleDisplaySleep as String, default: 0] > 0 {
+                return 0
+            }
+            guard let anyInput = CGEventType(rawValue: ~0) else { return 0 }
+            return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
+        }
     }
 
     init(dateNow: @escaping () -> Date = Date.init,
          uptimeNow: @escaping () -> TimeInterval = { ReminderClock.uptime },
          systemState: @escaping () -> SystemState = SystemState.current,
+         idleTime: @escaping () -> TimeInterval = SystemState.idleTime,
          preferences: UserDefaults = .standard) {
         self.dateNow = dateNow
         self.uptimeNow = uptimeNow
         self.systemState = systemState
+        self.idleTime = idleTime
         self.preferences = preferences
         super.init()
     }
@@ -93,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         schedule = ReminderSchedule(hours: configuration.intervalHours, now: dateNow(), uptime: uptimeNow(),
                                     isSessionActive: canPresentReminder,
                                     weekdayHours: configuration.weekdayHours, weekendHours: configuration.weekendHours,
-                                    snapshot: storage.loadProgress())
+                                    awayThreshold: configuration.awayThreshold, snapshot: storage.loadProgress())
         settings = SettingsModel(preferences: configuration)
         updater = AppUpdater()
         updater.beforeCheckForUpdates = { [weak self] in self?.popover.performClose(nil) }
@@ -236,6 +255,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             schedule.setHours(weekday: next.weekdayHours, weekend: next.weekendHours,
                               at: dateNow(), uptime: uptimeNow())
         }
+        if next.awayThreshold != configuration.awayThreshold {
+            schedule.setAwayThreshold(next.awayThreshold, at: dateNow(), uptime: uptimeNow())
+            drinkUndo?.schedule?.setAwayThreshold(next.awayThreshold, at: dateNow(), uptime: uptimeNow())
+        }
         configuration = next
         checkReminder()
     }
@@ -371,10 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // second clock read during saving must not silently cross the cutoff.
         let now = dateNow()
         let uptime = uptimeNow()
+        let idle = idleTime()
         // Keep an undo's old countdown on the same awake-time clock, including
         // sleep/wake transitions, until a later scheduling choice supersedes it.
-        drinkUndo?.schedule?.update(at: now, uptime: uptime, isSessionActive: canPresentReminder)
-        schedule.update(at: now, uptime: uptime, isSessionActive: canPresentReminder)
+        drinkUndo?.schedule?.update(at: now, uptime: uptime, isSessionActive: canPresentReminder, idleTime: idle)
+        schedule.update(at: now, uptime: uptime, isSessionActive: canPresentReminder, idleTime: idle)
         if !isPreviewing && overlay.isAwaitingAcknowledgment && !schedule.isAwaitingAcknowledgment {
             // A schedule update can also happen in a settings action before
             // this check. Retire any pending scene the schedule has cleared.
@@ -414,7 +438,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Still due here means the overlay could not be shown (no usable
             // screen, or an exit animation still running). Retry slowly; screen
             // changes and the overlay finishing also trigger a check.
-            let delay = schedule.isDue ? Self.presentationRetryDelay : max(due.timeIntervalSince(dateNow()), 0.1)
+            var delay = schedule.isDue ? Self.presentationRetryDelay : max(due.timeIntervalSince(dateNow()), 0.1)
+            if schedule.isAway && schedule.isWithinReminderHours && !schedule.isManuallyPaused
+                && !schedule.isAwaitingAcknowledgment {
+                delay = min(delay, Self.awayPollInterval)
+            }
             let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkReminder() }
             }

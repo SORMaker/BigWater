@@ -18,6 +18,10 @@ public struct ReminderSchedule {
     public private(set) var weekendHours: DailyHours?
     public private(set) var pausedUntil: Date?
     public private(set) var isSnoozed = false
+    /// Input idle longer than this counts as away. The idle minutes up to the
+    /// threshold still count; nil turns away detection off.
+    public private(set) var awayThreshold: TimeInterval?
+    public private(set) var isAway = false
 
     private var lastUpdateAt: Date
     private var lastUptime: TimeInterval
@@ -28,7 +32,7 @@ public struct ReminderSchedule {
 
     public var isCounting: Bool {
         isSessionActive && isWithinReminderHours && !isAwaitingAcknowledgment
-            && !isManuallyPaused
+            && !isManuallyPaused && !isAway
     }
 
     public var isDue: Bool { isCounting && remainingTime <= 0 }
@@ -68,8 +72,9 @@ public struct ReminderSchedule {
                 uptime: TimeInterval = ReminderClock.uptime,
                 isSessionActive: Bool = true, calendar: Calendar = .autoupdatingCurrent,
                 weekdayHours: DailyHours = .init(), weekendHours: DailyHours? = nil,
-                snapshot: ReminderSnapshot? = nil) {
+                awayThreshold: TimeInterval? = nil, snapshot: ReminderSnapshot? = nil) {
         intervalHours = Self.validated(hours)
+        self.awayThreshold = awayThreshold.map(Self.validAwayThreshold)
         remainingTime = intervalHours * 3_600
         self.isSessionActive = isSessionActive
         self.weekdayHours = Self.validHours(weekdayHours)
@@ -130,18 +135,48 @@ public struct ReminderSchedule {
         return min(max(hours, minimumHours), maximumHours)
     }
 
+    private static func validAwayThreshold(_ threshold: TimeInterval) -> TimeInterval {
+        threshold.isFinite ? max(60, threshold) : 300
+    }
+
+    /// `idleTime` is how long the keyboard and pointer have been untouched,
+    /// read with the same `uptime`. Nil means no new reading: an away state
+    /// stays away and counts nothing until a reading shows input again.
     public mutating func update(at now: Date, uptime: TimeInterval = ReminderClock.uptime,
-                                isSessionActive: Bool? = nil, calendar: Calendar = .autoupdatingCurrent) {
+                                isSessionActive: Bool? = nil, idleTime: TimeInterval? = nil,
+                                calendar: Calendar = .autoupdatingCurrent) {
         let today = calendar.dateComponents([.era, .year, .month, .day], from: now)
         let newLocalDay = !Self.sameDay(today, localDay)
         let elapsed = max(0, uptime - lastUptime)
         let projectedEnd = lastUpdateAt.addingTimeInterval(elapsed)
-        let countingStart: Date
+        var countingStart: Date
         if let pauseDeadlineUptime {
             let pausedFor = max(0, pauseDeadlineUptime - lastUptime)
             countingStart = lastUpdateAt.addingTimeInterval(pausedFor)
         } else {
             countingStart = lastUpdateAt
+        }
+        // Presence is known only from the last input, so it is applied after
+        // the fact: away time starts once idle passes the threshold and ends
+        // at the input that brought the person back.
+        var countingEnd = projectedEnd
+        var nowAway = false
+        if let awayThreshold {
+            if let idleTime {
+                let lastInput = uptime - max(0, idleTime)
+                nowAway = idleTime >= awayThreshold
+                if isAway {
+                    countingStart = max(countingStart,
+                                        lastUpdateAt.addingTimeInterval(lastInput - lastUptime))
+                }
+                if nowAway {
+                    countingEnd = min(countingEnd,
+                                      lastUpdateAt.addingTimeInterval(lastInput + awayThreshold - lastUptime))
+                }
+            } else {
+                nowAway = isAway
+                if isAway { countingEnd = countingStart }
+            }
         }
         // Local time governs whether an old pending scene crossed a rest
         // boundary; clock corrections must not keep it in the wrong period.
@@ -162,7 +197,7 @@ public struct ReminderSchedule {
             // Count only active-period overlaps so gaps and wall-clock jumps do
             // not consume active-use time.
             let activeElapsed = Self.activeSeconds(
-                from: countingStart, through: projectedEnd,
+                from: countingStart, through: countingEnd,
                 weekdayHours: weekdayHours, weekendHours: weekendHours,
                 calendar: self.calendar
             )
@@ -202,6 +237,7 @@ public struct ReminderSchedule {
             }
         }
         if let isSessionActive { self.isSessionActive = isSessionActive }
+        isAway = nowAway
 
         nextBoundaryAt = Self.nextBoundary(after: now, weekdayHours: weekdayHours,
                                             weekendHours: weekendHours, calendar: calendar)
@@ -286,6 +322,16 @@ public struct ReminderSchedule {
         isAwaitingAcknowledgment = false
         remainingTime = TimeInterval(minutes) * 60
         isSnoozed = true
+    }
+
+    /// Changes away detection from this moment on. Time already counted is
+    /// kept; turning detection off ends any away state.
+    public mutating func setAwayThreshold(_ threshold: TimeInterval?, at now: Date,
+                                          uptime: TimeInterval = ReminderClock.uptime,
+                                          calendar: Calendar = .autoupdatingCurrent) {
+        update(at: now, uptime: uptime, calendar: calendar)
+        awayThreshold = threshold.map(Self.validAwayThreshold)
+        if awayThreshold == nil { isAway = false }
     }
 
     public mutating func setHours(weekday: DailyHours, weekend: DailyHours?, at now: Date,

@@ -41,6 +41,8 @@ private final class SessionChecks {
     /// What the simulated session and displays report when the app asks.
     /// Posting a notification also updates it, as the real system would.
     private var system = AppDelegate.SystemState(isSessionActive: true, isScreenAwake: true)
+    /// Seconds since simulated input. The real idle time never reaches the app.
+    private var idle: TimeInterval = 0
 
     private func post(_ notification: Notification.Name, workspace: Bool = true) {
         switch notification {
@@ -739,6 +741,38 @@ private final class SessionChecks {
         pass("feature segments: lunch, reload and menu minutes follow the same saved state")
     }
 
+    /// Leaving the desk stops the countdown from the threshold on, the app
+    /// polls for the return, and the setting turns detection off at once.
+    func featureAwayScenario(_ preferences: UserDefaults) throws {
+        move(to: 22, 9)
+        launch(preferences)
+        try expect(schedule.awayThreshold == 300, "Away detection is not on by default")
+        move(to: 22, 9, 30)
+        idle = 600
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(schedule.isAway && schedule.remainingTime == 7_200 - 1_500
+                   && delegate.settings.menuBarStatus.phase == .away
+                   && delegate.settings.countdownDeadline == nil,
+                   "Ten idle minutes did not stop the countdown five minutes in")
+        let poll = delegate.reminderTimer?.fireDate.timeIntervalSinceNow ?? .infinity
+        try expect(poll <= AppDelegate.awayPollInterval, "Nothing polls for the return while away")
+
+        move(to: 22, 10)
+        idle = 10
+        delegate.reminderTimer?.fire()
+        try expect(!schedule.isAway && schedule.isCounting && schedule.remainingTime == 7_200 - 1_510,
+                   "The poll did not resume counting from the returning input")
+
+        delegate.settings.change { $0.pauseWhenAway = false }
+        move(to: 22, 10, 30)
+        idle = 1_800
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!schedule.isAway && schedule.remainingTime == 7_200 - 3_310
+                   && !AppStorage(defaults: preferences).loadPreferences().pauseWhenAway,
+                   "Turning detection off was not applied or not saved")
+        pass("feature away: idle pauses, a poll resumes, and the setting turns it off")
+    }
+
     func featurePendingAcrossGapScenario(_ preferences: UserDefaults) throws {
         try pendingAcrossGap(preferences, clockJump: false)
     }
@@ -808,7 +842,8 @@ private final class SessionChecks {
 
     private func launch(_ preferences: UserDefaults) {
         delegate = AppDelegate(dateNow: { self.readDate() }, uptimeNow: { self.uptime },
-                               systemState: { self.system }, preferences: preferences)
+                               systemState: { self.system }, idleTime: { self.idle },
+                               preferences: preferences)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
     }
 
@@ -828,6 +863,7 @@ private final class SessionChecks {
             delegate?.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
             delegate = nil
             system = AppDelegate.SystemState(isSessionActive: true, isScreenAwake: true)
+            idle = 0
             preferences.removePersistentDomain(forName: suiteName)
         }
         do {
@@ -858,6 +894,7 @@ private enum BigWaterSessionChecks {
             if CommandLine.arguments.contains("--features") {
                 let scenarios: [(String, (UserDefaults) throws -> Void)] = [
                     ("feature history corrections", checks.featureCorrectionsScenario),
+                    ("feature away from the desk", checks.featureAwayScenario),
                     ("feature period rename", checks.featurePeriodRenameScenario),
                     ("feature segmented timing and menu", checks.featureSegmentsScenario),
                     ("feature pending reminder across rest", checks.featurePendingAcrossGapScenario),

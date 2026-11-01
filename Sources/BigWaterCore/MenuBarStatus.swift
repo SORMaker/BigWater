@@ -3,7 +3,7 @@ import Foundation
 /// The menu shows active-use time, so lunch breaks do not inflate its minutes.
 public struct MenuBarStatus: Equatable {
     public enum Phase: Equatable {
-        case counting, snoozed, paused, waiting, resting, finishedForToday
+        case counting, snoozed, paused, away, waiting, resting, finishedForToday
     }
 
     public let phase: Phase
@@ -18,6 +18,8 @@ public struct MenuBarStatus: Equatable {
             phase = .paused
         } else if schedule.isAwaitingAcknowledgment {
             phase = .waiting
+        } else if schedule.isAway {
+            phase = .away
         } else if schedule.nextReminderAt == nil {
             phase = .finishedForToday
         } else {
@@ -32,6 +34,7 @@ public struct MenuBarStatus: Equatable {
         case .counting: return "计时中"
         case .snoozed: return "稍后提醒"
         case .paused: return "已暂停"
+        case .away: return "离开时暂停"
         case .waiting: return "等待喝水确认"
         case .resting: return "休息中"
         case .finishedForToday: return "今天不再提醒"
@@ -43,6 +46,7 @@ public struct MenuBarStatus: Equatable {
         if let remainingMinutes { return "\(remainingMinutes)分" }
         switch phase {
         case .paused: return "暂停"
+        case .away: return "离开"
         case .waiting: return "喝水"
         case .resting: return "休息"
         case .finishedForToday: return "明天见"
