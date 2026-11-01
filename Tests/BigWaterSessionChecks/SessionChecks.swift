@@ -676,6 +676,25 @@ private final class SessionChecks {
         pass("feature corrections: backfill and edits save without changing the live clock")
     }
 
+    func featurePeriodRenameScenario(_ preferences: UserDefaults) throws {
+        move(to: 29, 9)
+        launch(preferences)
+        move(to: 29, 9, 30)
+        post(.NSSystemClockDidChange, workspace: false)
+        delegate.settings.onDrink?()
+        move(to: 29, 9, 40)
+        post(.NSSystemClockDidChange, workspace: false)
+        delegate.settings.change { $0.weekdayHours.periods[0].name = "上午" }
+        delegate.settings.onUndoDrink?()
+        try expect(delegate.history.drinks.isEmpty && schedule.remainingTime == 4_800,
+                   "Renaming a period discarded the countdown that undo restores")
+        relaunch(preferences)
+        try expect(delegate.configuration.weekdayHours.periods[0].name == "上午"
+                   && schedule.remainingTime == 4_800,
+                   "The renamed period or the restored countdown was lost on reload")
+        pass("feature period rename: undo and saved progress survive a new name")
+    }
+
     func featureSegmentsScenario(_ preferences: UserDefaults) throws {
         move(to: 17, 11)
         var configuration = AppPreferences()
@@ -839,6 +858,7 @@ private enum BigWaterSessionChecks {
             if CommandLine.arguments.contains("--features") {
                 let scenarios: [(String, (UserDefaults) throws -> Void)] = [
                     ("feature history corrections", checks.featureCorrectionsScenario),
+                    ("feature period rename", checks.featurePeriodRenameScenario),
                     ("feature segmented timing and menu", checks.featureSegmentsScenario),
                     ("feature pending reminder across rest", checks.featurePendingAcrossGapScenario),
                     ("feature pending reminder after clock correction", checks.featurePendingClockJumpScenario),

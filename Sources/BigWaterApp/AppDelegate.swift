@@ -226,11 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func changePreferences(to candidate: AppPreferences) {
         let next = candidate.validated()
-        if next.intervalHours != configuration.intervalHours
-            || next.weekdayHours != configuration.weekdayHours
-            || next.weekendHours != configuration.weekendHours {
-            drinkUndo?.schedule = nil
-        }
+        // A renamed period counts the same way, so undo can still restore.
+        if !next.hasSameSchedule(as: configuration) { drinkUndo?.schedule = nil }
         if next.intervalHours != schedule.intervalHours {
             schedule.setInterval(hours: next.intervalHours, now: dateNow(), uptime: uptimeNow())
         }

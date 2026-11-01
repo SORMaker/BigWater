@@ -31,7 +31,8 @@ struct SegmentedScheduleChecks {
         ("segmented: delayed callbacks and new-day reset", delayedCallbacksAndNewDay),
         ("segmented: delayed callback resumes from a gap", delayedCallbackFromGap),
         ("segmented: delayed callback counts after pause expiry", delayedPauseExpiry),
-        ("segmented: lenient menu countdown preference", lenientCountdownPreference)
+        ("segmented: lenient menu countdown preference", lenientCountdownPreference),
+        ("segmented: period names never change the schedule", periodNamesNeverChangeTheSchedule)
     ]
 
     private static func legacyAPIAndCodableMigration() throws {
@@ -57,6 +58,36 @@ struct SegmentedScheduleChecks {
         let roundTrip = try JSONDecoder().decode(DailyHours.self, from: encoded)
         try expect(roundTrip == periods && roundTrip.startMinutes == 360 && roundTrip.endMinutes == 1_080,
                    "Segmented periods did not survive Codable round-trip")
+    }
+
+    /// Renaming a period is a label change. It must not discard saved
+    /// progress on relaunch or count as a different schedule.
+    private static func periodNamesNeverChangeTheSchedule() throws {
+        var named = periods
+        named.periods[0].name = "上午"
+        try expect(named.hasSameTiming(as: periods) && named != periods,
+                   "Timing comparison did not ignore period names")
+        var moved = named
+        moved.periods[1].endMinutes += 5
+        try expect(!moved.hasSameTiming(as: periods), "Timing comparison ignored a moved boundary")
+
+        var before = AppPreferences()
+        before.weekdayHours = periods
+        var after = before
+        after.weekdayHours = named
+        try expect(after.hasSameSchedule(as: before), "A rename was treated as a schedule change")
+        after.weekendHours = periods
+        try expect(!after.hasSameSchedule(as: before), "Adding weekend hours was not a schedule change")
+        after = before
+        after.intervalHours = 1.5
+        try expect(!after.hasSameSchedule(as: before), "An interval edit was not a schedule change")
+
+        var active = ReminderSchedule(now: date(15, 9), uptime: 0, calendar: calendar, weekdayHours: periods)
+        active.update(at: date(15, 9, 30), uptime: 1_800, calendar: calendar)
+        let saved = active.snapshot(at: date(15, 9, 30), uptime: 1_800, calendar: calendar)
+        let restored = ReminderSchedule(now: date(15, 10), uptime: 9_000, calendar: calendar,
+                                        weekdayHours: named, snapshot: saved)
+        try expect(restored.remainingTime == 5_400, "Renaming a period discarded saved progress")
     }
 
     private static func validatePeriods() throws {

@@ -75,6 +75,19 @@ public struct DailyHours: Codable, Equatable {
         }
     }
 
+    /// The same periods, ignoring names. A name never changes what is counted.
+    public func hasSameTiming(as other: DailyHours) -> Bool {
+        periods.count == other.periods.count
+            && zip(periods, other.periods).allSatisfy {
+                $0.startMinutes == $1.startMinutes && $0.endMinutes == $1.endMinutes
+            }
+    }
+
+    static func sameTiming(_ lhs: DailyHours?, _ rhs: DailyHours?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return lhs.hasSameTiming(as: rhs)
+    }
+
     public var isValid: Bool {
         guard !periods.isEmpty else { return false }
         var previousEnd = -1
@@ -212,6 +225,13 @@ public struct AppPreferences: Codable, Equatable {
         placement = values.lenientValue(ReminderPlacement.self, forKey: .placement) ?? defaults.placement
         showMenuBarCountdown = values.lenientValue(Bool.self, forKey: .showMenuBarCountdown)
             ?? defaults.showMenuBarCountdown
+    }
+
+    /// True when the countdown counts the same way under both settings.
+    public func hasSameSchedule(as other: AppPreferences) -> Bool {
+        intervalHours == other.intervalHours
+            && weekdayHours.hasSameTiming(as: other.weekdayHours)
+            && DailyHours.sameTiming(weekendHours, other.weekendHours)
     }
 
     public func validated() -> AppPreferences {
