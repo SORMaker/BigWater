@@ -508,8 +508,10 @@ private final class ClaudeClickTarget: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { onClick?() }
     override func draw(_ dirtyRect: NSRect) {
-        // A lower input surface catches clicks; the canvas paints the same pixels above it.
-        WaterPalette.clay.setFill()
+        // The canvas above paints the character. This panel only has to catch
+        // clicks, which needs a non-zero alpha, not a visible color: a panel
+        // that moves a frame before the canvas redraws must not flash.
+        NSColor(white: 0, alpha: 0.01).setFill()
         dirtyRect.fill()
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
