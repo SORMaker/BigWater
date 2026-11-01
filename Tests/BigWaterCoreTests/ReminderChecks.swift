@@ -375,10 +375,51 @@ struct ReminderChecks {
         let image = PixelArt.image(size: scene.viewport, backingScale: 1) { SceneRenderer.draw(scene, in: $0) }
         let bitmap = image.representations.first as! NSBitmapImageRep
         let data = bitmap.bitmapData!
-        for y in 0..<bitmap.pixelsHigh {
-            for x in 0..<bitmap.pixelsWide {
-                try visit(x, y, data[y * bitmap.bytesPerRow + x * 4 + 3])
+        let width = bitmap.pixelsWide, height = bitmap.pixelsHigh, rowBytes = bitmap.bytesPerRow
+        // Plain counters: unoptimized builds step a Range through generic
+        // witnesses, which made whole-frame scans take seconds.
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                try visit(x, y, data[y * rowBytes + x * 4 + 3])
+                x += 1
             }
+            y += 1
+        }
+    }
+
+    /// The pixels whose centers fall inside any of `rects`. Marking them once
+    /// keeps a whole-frame scan from testing every rect at every pixel.
+    private struct PixelCoverage {
+        private let rects: [CGRect]
+        private let width: Int
+        private let height: Int
+        private var covered: [Bool]
+
+        init(_ rects: [CGRect], size: CGSize) {
+            self.rects = rects
+            width = Int(size.width.rounded(.up))
+            height = Int(size.height.rounded(.up))
+            covered = Array(repeating: false, count: width * height)
+            func clamp(_ value: CGFloat, to limit: Int) -> Int { Int(min(max(value, 0), CGFloat(limit))) }
+            for rect in rects {
+                let left = clamp(rect.minX.rounded(.down), to: width), right = clamp(rect.maxX.rounded(.up), to: width)
+                let top = clamp(rect.minY.rounded(.down), to: height), bottom = clamp(rect.maxY.rounded(.up), to: height)
+                guard left < right, top < bottom else { continue }
+                for y in top..<bottom {
+                    for x in left..<right where rect.contains(Self.center(x, y)) { covered[y * width + x] = true }
+                }
+            }
+        }
+
+        static func center(_ x: Int, _ y: Int) -> CGPoint { CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5) }
+
+        func contains(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, y >= 0, x < width, y < height else {
+                return rects.contains { $0.contains(Self.center(x, y)) }
+            }
+            return covered[y * width + x]
         }
     }
 
@@ -399,15 +440,17 @@ struct ReminderChecks {
                     let hits = PixelArt.characterHitRegions(in: scene)
                     let bounds = scene.visibleBounds
                     try expect(hits.allSatisfy { bounds.contains($0) }, "Character input escaped the display")
+                    let painted = PixelCoverage(regions, size: scene.viewport)
+                    let clickable = PixelCoverage(hits, size: scene.viewport)
                     try eachPixel(of: scene) { x, y, alpha in
-                        let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+                        let point = PixelCoverage.center(x, y)
                         if alpha > 0 && !bounds.contains(point) {
                             throw CheckFailure(description: "\(edge) drew over the Dock or menu bar at (\(x), \(y))")
                         }
-                        if alpha > 0 && !regions.contains(where: { $0.contains(point) }) {
+                        if alpha > 0 && !painted.contains(x, y) {
                             throw CheckFailure(description: "\(character) \(edge) \(scene.phase) painted (\(x), \(y)) outside its redraw bounds")
                         }
-                        if alpha < 255 && hits.contains(where: { $0.contains(point) }) {
+                        if alpha < 255 && clickable.contains(x, y) {
                             throw CheckFailure(description: "\(character) \(edge) has an invisible click target at (\(x), \(y))")
                         }
                     }
@@ -428,9 +471,9 @@ struct ReminderChecks {
             scene.advance(by: 2.3)
             let regions = SceneRenderer.speechRegions(for: scene)
             try expect(regions.count == 4, "Visible bubble body or tail has no click regions")
+            let clickable = PixelCoverage(regions, size: scene.viewport)
             try eachPixel(of: scene) { x, y, alpha in
-                let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
-                if alpha < 255 && regions.contains(where: { $0.contains(point) }) {
+                if alpha < 255 && clickable.contains(x, y) {
                     throw CheckFailure(description: "Bubble click region is not painted at (\(x), \(y))")
                 }
             }
