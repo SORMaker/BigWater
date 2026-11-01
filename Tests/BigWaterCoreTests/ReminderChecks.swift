@@ -799,6 +799,7 @@ enum BigWaterChecks {
             ("descent cannot leak input windows onto another display", suite.descendingHitRegionsStayOnTheirDisplay),
             ("all droplet themes keep animation and input bounded", suite.dropletThemesKeepInputAndAnimationBounded)
         ] + SegmentedScheduleChecks.checks + HistoryCorrectionChecks.checks + MenuBarStatusChecks.checks
+            + CountdownStatusChecks.checks
         let arguments = Array(CommandLine.arguments.dropFirst())
         let checks: [(String, () throws -> Void)]
         if arguments.isEmpty {

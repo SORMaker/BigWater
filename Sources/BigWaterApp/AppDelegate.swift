@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var schedule: ReminderSchedule?
     }
     private var drinkUndo: DrinkUndo?
+    private lazy var menuIcon = PixelArt.menuIcon()
     private var lastDrinkUptime: TimeInterval?
     private let dateNow: () -> Date
     private let uptimeNow: () -> TimeInterval
@@ -129,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let item = NSStatusBar.system.statusItem(withLength: 28)
         if let button = item.button {
-            button.image = PixelArt.menuIcon()
+            button.image = menuIcon
             button.imagePosition = .imageOnly
             button.setAccessibilityLabel("Big Water 喝水提醒设置")
             button.target = self
@@ -442,7 +443,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.preferences = configuration
         settings.remainingTime = schedule.remainingTime
         settings.countdownDeadline = schedule.isCounting ? now.addingTimeInterval(schedule.remainingTime) : nil
-        settings.countdownOverride = nil
         settings.isManuallyPaused = schedule.isManuallyPaused
         settings.isAwaitingAcknowledgment = schedule.isAwaitingAcknowledgment && !isPreviewing
         settings.canPreview = canPresentReminder && !overlay.isActive
@@ -453,33 +453,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.canRecordDrink = isPreviewing || !overlay.isActive || schedule.isAwaitingAcknowledgment
         settings.displays = OverlayController.availableDisplays
         settings.menuBarStatus = MenuBarStatus(schedule: schedule, canPresentReminder: canPresentReminder)
-        if !schedule.isWithinReminderHours {
-            settings.stateTitle = "休息时间"
-            settings.countdownOverride = "休息中"
-            let start = schedule.nextBoundaryAt.formatted(date: .omitted, time: .shortened)
-            let sameDay = Calendar.autoupdatingCurrent.isDate(now, inSameDayAs: schedule.nextBoundaryAt)
-            settings.scheduleText = sameDay
-                ? "\(start) 后接着剩余时间继续计时"
-                : "本地 \(start) 后使用电脑，开始新的计时"
-        } else if schedule.isManuallyPaused {
-            settings.stateTitle = "计时已暂停"
-            let until = schedule.pausedUntil?.formatted(date: .omitted, time: .shortened) ?? ""
-            settings.scheduleText = "\(until) 自动恢复，保留当前剩余时间"
-        } else if !canPresentReminder {
-            settings.stateTitle = "休眠暂停"
-            settings.scheduleText = "亮屏后接着剩余时间继续计时"
-        } else if schedule.isAwaitingAcknowledgment {
-            settings.stateTitle = "等待你的确认"
-            settings.countdownOverride = "喝口水吧"
-            settings.scheduleText = "喝水后点提醒里或下面的按钮，也可以稍后再提醒"
-        } else if let next = schedule.nextReminderAt {
-            settings.stateTitle = schedule.isSnoozed ? "稍后提醒" : "距离下次提醒"
-            settings.scheduleText = "下次提醒 \(next.formatted(date: .omitted, time: .shortened)) · 休眠时暂停"
-        } else {
-            settings.stateTitle = "今天不再提醒"
-            settings.countdownOverride = "明天见"
-            settings.scheduleText = "剩余作息不足一个间隔，明天使用时重新计时"
-        }
+        let status = CountdownStatus(schedule: schedule, canPresentReminder: canPresentReminder, now: now)
+        settings.stateTitle = status.title
+        settings.countdownOverride = status.replacement
+        settings.scheduleText = status.detail
         let updateHint = updater.availableVersion.map { "发现新版本 \($0) · " } ?? ""
         statusItem?.button?.toolTip = "Big Water · \(updateHint)\(settings.scheduleText)"
         refreshMenuBarStatus()
@@ -496,7 +473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let title = status.title(showMinutes: configuration.showMenuBarCountdown)
         let text = title + (hasUpdate ? (title.isEmpty ? "•" : " •") : "")
         item.length = text.isEmpty ? 28 : NSStatusItem.variableLength
-        button.image = PixelArt.menuIcon()
+        button.image = menuIcon
         button.imagePosition = text.isEmpty ? .imageOnly : .imageLeft
         let styled = NSMutableAttributedString(string: text,
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])

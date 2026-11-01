@@ -200,7 +200,7 @@ public struct ReminderAppearance: Codable, Equatable {
 /// User-controlled settings shared by the app, settings UI, and reminder
 /// scheduler. Values loaded from storage should pass through `validated()`.
 public struct AppPreferences: Codable, Equatable {
-    public var intervalHours: Double = 2
+    public var intervalHours: Double = ReminderSchedule.defaultHours
     public var weekdayHours: DailyHours = .init()
     public var weekendHours: DailyHours? = nil
     public var style: ReminderStyle = .animated

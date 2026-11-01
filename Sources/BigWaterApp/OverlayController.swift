@@ -87,7 +87,7 @@ final class OverlayController {
     func acknowledge() {
         guard isActive, !actionInvoked else { return }
         if isPreview {
-            finishPreview()
+            stop()
             return
         }
         if style == .compact {
@@ -107,7 +107,7 @@ final class OverlayController {
     func confirmDrink() {
         guard isActive, !actionInvoked else { return }
         if isPreview {
-            finishPreview()
+            stop()
             return
         }
         actionInvoked = true
@@ -128,7 +128,7 @@ final class OverlayController {
     func snooze(minutes: Int) {
         guard (minutes == 10 || minutes == 20), isActive, !actionInvoked else { return }
         guard !isPreview else {
-            finishPreview()
+            stop()
             return
         }
         actionInvoked = true
@@ -139,7 +139,7 @@ final class OverlayController {
 
     func endPreview() {
         guard isActive, isPreview else { return }
-        finishPreview()
+        stop()
     }
 
     func suspend() {
@@ -199,10 +199,6 @@ final class OverlayController {
         isPreview = false
         actionInvoked = false
         if endedPreview { onPreviewEnd?() }
-    }
-
-    private func finishPreview() {
-        stop()
     }
 
     private func startTimer() {
