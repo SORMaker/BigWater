@@ -56,6 +56,18 @@ private final class SessionChecks {
         center.post(name: notification, object: nil)
     }
 
+    /// Lets a started drink-along run out, which is when the drink counts.
+    /// This is animation time only: the app's clock does not move.
+    private func finishDrink() {
+        overlay.advance(by: ReminderScene.descentDuration + ReminderScene.standardDrinkingDuration + 0.1)
+    }
+
+    /// Presses the reminder's drink button and drinks to the end.
+    private func drink() {
+        overlay.beginDrinking()
+        finishDrink()
+    }
+
     private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         if !condition() { throw NSError(domain: "BigWaterSessionChecks", code: 1,
                                         userInfo: [NSLocalizedDescriptionKey: message]) }
@@ -110,10 +122,10 @@ private final class SessionChecks {
         move(to: 16, 10)
         post(.NSSystemClockDidChange, workspace: false)
         try expect(overlay.isAwaitingAcknowledgment, "Morning reminder failed to start")
-        overlay.acknowledge()
-        try expect(overlay.isActive && !overlay.isAwaitingAcknowledgment, "Ordinary click lost the exit animation")
-        try expect(schedule.nextReminderAt == now.addingTimeInterval(7_200), "Ordinary click did not restart the interval")
-        pass("ordinary click preserves exit animation and restarts countdown")
+        drink()
+        try expect(overlay.isActive && !overlay.isAwaitingAcknowledgment, "A finished drink lost the exit animation")
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(7_200), "A finished drink did not restart the interval")
+        pass("a finished drink keeps the exit animation and restarts countdown")
 
         // Complete that exit without waiting for wall time, then start the next
         // real reminder through the production clock-change handler.
@@ -121,9 +133,9 @@ private final class SessionChecks {
         move(to: 16, 12)
         post(.NSSystemClockDidChange, workspace: false)
         move(to: 16, 22)
-        overlay.acknowledge()
-        try expect(!overlay.isActive && !schedule.isCounting, "A cutoff-time click left the overlay on screen")
-        pass("cutoff-time click immediately dismisses the overlay")
+        drink()
+        try expect(!overlay.isActive && !schedule.isCounting, "A drink finished at the cutoff left the overlay on screen")
+        pass("a drink finished at the cutoff dismisses the overlay")
 
         move(to: 17, 8)
         post(.NSCalendarDayChanged, workspace: false)
@@ -149,7 +161,7 @@ private final class SessionChecks {
         post(.NSCalendarDayChanged, workspace: false)
         move(to: 19, 10, 30)
         post(.NSSystemClockDidChange, workspace: false)
-        overlay.acknowledge()
+        drink()
         post(NSWorkspace.screensDidSleepNotification)
         move(to: 19, 11)
         post(NSWorkspace.screensDidWakeNotification)
@@ -164,12 +176,24 @@ private final class SessionChecks {
         move(to: 20, 10, 30)
         post(.NSSystemClockDidChange, workspace: false)
         try expect(overlay.isAwaitingAcknowledgment, "Drink-confirmation fixture did not start")
-        overlay.confirmDrink()
-        try expect(delegate.history.count(on: now) == 1,
-                   "The drink button did not record immediately at click time")
-        try expect(schedule.nextReminderAt == now.addingTimeInterval(9_000), "Drink click did not immediately restart the regular interval")
-        overlay.confirmDrink()
-        try expect(delegate.history.count(on: now) == 1, "Double click counted a drink twice")
+        overlay.advance(by: ReminderScene.descentDuration + 0.1)
+        overlay.beginDrinking()
+        try expect(overlay.isDrinking && overlay.isAwaitingAcknowledgment && schedule.isAwaitingAcknowledgment
+                   && delegate.history.count(on: now) == 0,
+                   "The drink button dismissed or recorded at once instead of starting the drink-along")
+        try expect(delegate.settings.drinkTitle == "喝水中…" && !delegate.settings.canRecordDrink,
+                   "The menu still offers to record while the drink-along runs")
+        overlay.beginDrinking()
+        delegate.settings.onDrink?()
+        overlay.advance(by: ReminderScene.standardDrinkingDuration - 1)
+        try expect(overlay.isDrinking && delegate.history.count(on: now) == 0,
+                   "More clicks shortened the drink-along")
+        overlay.advance(by: 1.1)
+        try expect(delegate.history.count(on: now) == 1 && overlay.isActive && !overlay.isAwaitingAcknowledgment,
+                   "The finished drink-along did not record exactly one drink")
+        try expect(schedule.nextReminderAt == now.addingTimeInterval(9_000), "The finished drink did not restart the regular interval")
+        overlay.beginDrinking()
+        try expect(delegate.history.count(on: now) == 1, "A click during the exit counted a drink twice")
         try expect(AppStorage(defaults: preferences).loadHistory().count(on: now) == 1, "Drink confirmation was not saved")
         let saved = AppStorage(defaults: preferences)
         try expect(saved.loadPreferences().intervalHours == 2.5
@@ -177,7 +201,7 @@ private final class SessionChecks {
                    && saved.loadProgress()?.remainingTime == 9_000,
                    "Drink, settings and new countdown were not committed as one state")
         overlay.stop()
-        pass("explicit drink confirms immediately, saves locally and ignores double click")
+        pass("a drink counts once, only after the whole drink-along, and is saved")
 
         let model: SettingsModel = delegate.settings
         model.change {
@@ -187,7 +211,7 @@ private final class SessionChecks {
         let originalDeadline = schedule.nextReminderAt
         model.onPreview?()
         try expect(overlay.isActive && delegate.isPreviewing, "Appearance preview did not start")
-        overlay.confirmDrink()
+        overlay.beginDrinking()
         try expect(!overlay.isActive && !delegate.isPreviewing, "Preview action did not close the preview")
         try expect(schedule.nextReminderAt == originalDeadline, "Appearance preview changed the deadline")
         try expect(delegate.history.count(on: now) == 1, "Preview recorded a drink")
@@ -229,9 +253,9 @@ private final class SessionChecks {
         move(to: 20, 14, 5)
         relaunch(preferences)
         try expect(overlay.isActive && schedule.isAwaitingAcknowledgment, "Restart restored pending state without its visible reminder")
-        overlay.acknowledge()
-        try expect(delegate.history.count(on: now) == 2, "Character confirmation did not count the restored reminder")
-        pass("outstanding reminder is re-presented after restart and character confirmation records a drink")
+        drink()
+        try expect(delegate.history.count(on: now) == 2, "Drinking did not count the restored reminder")
+        pass("outstanding reminder is re-presented after restart and its drink is recorded")
 
         move(to: 21, 8)
         post(.NSCalendarDayChanged, workspace: false)
@@ -239,7 +263,7 @@ private final class SessionChecks {
         post(.NSSystemClockDidChange, workspace: false)
         try expect(overlay.isAwaitingAcknowledgment, "Cutoff confirmation fixture did not start")
         move(to: 21, 22)
-        overlay.confirmDrink()
+        drink()
         try expect(delegate.history.count(on: now) == 1,
                    "Visible drink confirmation was lost at the closing boundary")
         try expect(!overlay.isActive && !schedule.isCounting, "Cutoff confirmation restarted night counting")
@@ -301,7 +325,7 @@ private final class SessionChecks {
         pass("all entrance layouts avoid the Dock, stay clickable and hold buttons still")
     }
 
-    /// Both confirmation entry points share one record per real reminder.
+    /// The reminder's own button and the menu share one record per real reminder.
     func drinkConfirmationScenario(_ preferences: UserDefaults) throws {
         move(to: 27, 8)
         launch(preferences)
@@ -310,14 +334,17 @@ private final class SessionChecks {
 
         for style in ReminderStyle.allCases {
             delegate.settings.change { $0.style = style }
-            for characterFirst in [true, false] {
+            for menuFirst in [true, false] {
                 move(to: 27, hour)
                 hour += 2
                 post(.NSSystemClockDidChange, workspace: false)
                 try expect(overlay.isAwaitingAcknowledgment, "Confirmation fixture did not start")
 
-                if characterFirst { overlay.acknowledge() }
-                else { overlay.confirmDrink() }
+                if menuFirst { delegate.settings.onDrink?() }
+                else { overlay.beginDrinking() }
+                try expect(delegate.history.count(on: now) == confirmed && schedule.isAwaitingAcknowledgment,
+                           "Starting the drink-along already recorded a drink")
+                finishDrink()
                 confirmed += 1
                 try expect(delegate.history.count(on: now) == confirmed,
                            "The first confirmation did not record exactly one drink")
@@ -328,8 +355,7 @@ private final class SessionChecks {
                 try expect(!schedule.isAwaitingAcknowledgment && schedule.nextReminderAt == deadline,
                            "Confirmation did not restart the full interval")
 
-                overlay.acknowledge()
-                overlay.confirmDrink()
+                overlay.beginDrinking()
                 delegate.settings.onDrink?()
                 try expect(delegate.history.count(on: now) == confirmed && schedule.nextReminderAt == deadline,
                            "Repeated or mixed confirmation counted the same reminder twice")
@@ -339,13 +365,13 @@ private final class SessionChecks {
                 relaunch(preferences)
                 try expect(delegate.history.count(on: now) == confirmed && !overlay.isActive,
                            "Restart lost a confirmation or re-presented an acknowledged reminder")
-                pass("\(style.rawValue) \(characterFirst ? "character" : "button") first: one saved drink per reminder")
+                pass("\(style.rawValue) \(menuFirst ? "menu" : "button") first: one saved drink per reminder")
             }
 
             let deadline = schedule.nextReminderAt
             delegate.settings.onPreview?()
             try expect(overlay.isActive && delegate.isPreviewing, "Character preview fixture did not start")
-            overlay.acknowledge()
+            overlay.beginDrinking()
             try expect(!overlay.isActive && !delegate.isPreviewing
                        && delegate.history.count(on: now) == confirmed && schedule.nextReminderAt == deadline,
                        "Clicking the preview character recorded a drink or changed the countdown")
@@ -423,14 +449,14 @@ private final class SessionChecks {
         move(to: 29, 9, 30)
         post(.NSSystemClockDidChange, workspace: false)
         try expect(overlay.isAwaitingAcknowledgment, "Undo reminder fixture did not become due")
-        overlay.acknowledge()
+        drink()
         delegate.settings.onUndoDrink?()
         try expect(delegate.history.count(on: now) == 0 && schedule.isAwaitingAcknowledgment
                    && overlay.isAwaitingAcknowledgment,
-                   "Undoing a character confirmation did not restore the waiting reminder")
-        overlay.confirmDrink()
+                   "Undoing a reminder's drink did not restore the waiting reminder")
+        drink()
         try expect(delegate.history.count(on: now) == 1, "A restored reminder could not be confirmed again")
-        pass("quiet-hours records and undone character confirmations preserve reminder behavior")
+        pass("quiet-hours records and undone reminder drinks preserve reminder behavior")
     }
 
     func quickMenuScenario(_ preferences: UserDefaults) throws {
@@ -499,7 +525,10 @@ private final class SessionChecks {
         move(to: 23, 11)
         post(.NSSystemClockDidChange, workspace: false)
         try expect(overlay.isAwaitingAcknowledgment, "Overlay fixture did not start")
-        overlay.acknowledge()
+        overlay.beginDrinking()
+        // Stop just short of the end so the real timers play the whole exit.
+        overlay.advance(by: ReminderScene.descentDuration + ReminderScene.standardDrinkingDuration - 0.05)
+        spin(0.3)
         move(to: 23, 13, 1)
         post(.NSSystemClockDidChange, workspace: false)
         try expect(schedule.isDue && overlay.isActive, "Fixture did not overlap a due reminder with the exit animation")
@@ -583,7 +612,7 @@ private final class SessionChecks {
             spin(0.1)
             try expect(desktop.buttonPanels.map(\.frame) == frames && desktop.buttonPanels[0].isVisible,
                        "\(edge) resume changed its entrance or lost controls")
-            desktop.acknowledge()
+            desktop.beginDrinking()
             try expect(!desktop.isActive && confirmations == 0, "Directional preview confirmed a drink")
         }
         try expect(previewEnds == ReminderEdge.allCases.count, "A directional preview never ended")
@@ -597,9 +626,15 @@ private final class SessionChecks {
             try expect(desktop.buttonPanels.count == 3 && desktop.blockerPanels.filter(\.isVisible).count == 4,
                        "\(edge) reminder controls or bubble blockers are missing")
             let previous = confirmations
-            desktop.confirmDrink()
-            desktop.confirmDrink()
-            desktop.acknowledge()
+            let snoozeFrames = desktop.buttonPanels.dropFirst().map(\.frame)
+            desktop.beginDrinking()
+            desktop.beginDrinking()
+            try expect(confirmations == previous && desktop.isDrinking
+                       && desktop.buttonPanels.filter(\.isVisible).map(\.frame) == snoozeFrames
+                       && desktop.blockerPanels.filter(\.isVisible).count == 4,
+                       "\(edge) drink-along recorded early, moved the snoozes or lost its bubble")
+            spin(0.2)
+            desktop.advance(by: ReminderScene.standardDrinkingDuration)
             try expect(confirmations == previous + 1 && desktop.isActive && !desktop.isAwaitingAcknowledgment,
                        "\(edge) confirmation was duplicated or skipped the exit animation")
             spin(ReminderScene.acknowledgmentDuration + ReminderScene.ascentDuration + 0.2)
@@ -637,12 +672,18 @@ private final class SessionChecks {
         try expect(!overlay.isActive && schedule.isSnoozed && !menu.isAwaitingAcknowledgment, "Menu snooze did not close the reminder")
         move(to: 26, 11, 50)
         post(.NSSystemClockDidChange, workspace: false)
+        try expect(menu.drinkTitle == "去喝水"
+                   && delegate.makeQuickMenu().item(withTitle: "去喝水")?.isEnabled == true,
+                   "The menus still promise an instant record while a reminder waits")
         menu.onDrink?()
+        try expect(delegate.history.drinks.isEmpty && schedule.isAwaitingAcknowledgment,
+                   "The menu was a shortcut around the drink-along")
+        finishDrink()
         try expect(delegate.history.drinks.count == 1 && !schedule.isAwaitingAcknowledgment,
                    "Menu drink confirmation was not recorded")
         try expect(overlay.isActive && !overlay.isAwaitingAcknowledgment, "Menu confirmation skipped the exit animation")
         overlay.stop()
-        pass("the menu can confirm a drink or snooze a waiting reminder")
+        pass("the menu can snooze a waiting reminder or start its drink-along")
     }
 
 
@@ -773,6 +814,62 @@ private final class SessionChecks {
         pass("feature away: idle pauses, a poll resumes, and the setting turns it off")
     }
 
+    /// A reflex click must not dismiss the reminder: the drink counts only
+    /// when the whole drink-along has run, and a snooze during it records nothing.
+    func featureDrinkAlongScenario(_ preferences: UserDefaults) throws {
+        move(to: 24, 9)
+        launch(preferences)
+        var recorded = 0
+        for style in ReminderStyle.allCases {
+            delegate.settings.change { $0.style = style }
+            move(to: 24, style == .animated ? 11 : 14)
+            post(.NSSystemClockDidChange, workspace: false)
+            try expect(overlay.isAwaitingAcknowledgment, "\(style) drink-along fixture did not start")
+            overlay.advance(by: ReminderScene.descentDuration + 0.1)
+            try expect(overlay.buttonPanels.filter(\.isVisible).map(\.title) == ["去喝水", "10 分钟后", "20 分钟后"],
+                       "\(style) reminder does not offer the drink and both snoozes")
+
+            overlay.beginDrinking()
+            overlay.advance(by: ReminderScene.standardDrinkingDuration / 2)
+            try expect(overlay.isActive && overlay.isDrinking && delegate.history.drinks.count == recorded
+                       && schedule.isAwaitingAcknowledgment && delegate.settings.isDrinking,
+                       "\(style) click dismissed the reminder or recorded before the drink-along ended")
+            try expect(overlay.buttonPanels.filter(\.isVisible).map(\.title) == ["10 分钟后", "20 分钟后"],
+                       "\(style) drink-along kept a drink button or lost its snoozes")
+
+            post(NSWorkspace.screensDidSleepNotification)
+            post(NSWorkspace.screensDidWakeNotification)
+            try expect(overlay.isDrinking && delegate.history.drinks.count == recorded,
+                       "\(style) drink-along did not survive the display sleeping")
+
+            overlay.snooze(minutes: 10)
+            try expect(!overlay.isActive && delegate.history.drinks.count == recorded
+                       && schedule.isSnoozed && schedule.remainingTime == 600 && !delegate.settings.isDrinking,
+                       "\(style) snooze during the drink-along recorded a drink or did not snooze")
+
+            move(to: 24, style == .animated ? 11 : 14, 10)
+            post(.NSSystemClockDidChange, workspace: false)
+            try expect(overlay.isAwaitingAcknowledgment, "\(style) snoozed reminder did not return")
+            drink()
+            recorded += 1
+            try expect(delegate.history.drinks.count == recorded
+                       && !schedule.isAwaitingAcknowledgment
+                       && schedule.nextReminderAt == now.addingTimeInterval(7_200),
+                       "\(style) finished drink-along did not record one drink and restart the interval")
+            overlay.stop()
+            pass("feature drink-along: \(style.rawValue) records only at the end, and a snooze records nothing")
+        }
+
+        move(to: 24, 16, 10)
+        post(.NSSystemClockDidChange, workspace: false)
+        overlay.beginDrinking()
+        move(to: 24, 22)
+        post(.NSSystemClockDidChange, workspace: false)
+        try expect(!overlay.isActive && delegate.history.drinks.count == recorded && !schedule.isAwaitingAcknowledgment,
+                   "A drink-along cut off by the end of the day was recorded or left on screen")
+        pass("feature drink-along: the end of the day retires an unfinished drink without recording")
+    }
+
     func featurePendingAcrossGapScenario(_ preferences: UserDefaults) throws {
         try pendingAcrossGap(preferences, clockJump: false)
     }
@@ -823,7 +920,7 @@ private final class SessionChecks {
                    "Skipping the lunch boundary left the old scene detached from the schedule")
         try expect(overlay.buttonPanels.first !== oldPanel,
                    "The prior period's action panel survived instead of being re-offered")
-        overlay.confirmDrink()
+        drink()
         try expect(delegate.history.count(on: now) == 1 && !schedule.isAwaitingAcknowledgment,
                    "The re-offered reminder did not accept exactly one drink confirmation")
         overlay.stop()
@@ -895,6 +992,7 @@ private enum BigWaterSessionChecks {
                 let scenarios: [(String, (UserDefaults) throws -> Void)] = [
                     ("feature history corrections", checks.featureCorrectionsScenario),
                     ("feature away from the desk", checks.featureAwayScenario),
+                    ("feature drink-along", checks.featureDrinkAlongScenario),
                     ("feature period rename", checks.featurePeriodRenameScenario),
                     ("feature segmented timing and menu", checks.featureSegmentsScenario),
                     ("feature pending reminder across rest", checks.featurePendingAcrossGapScenario),

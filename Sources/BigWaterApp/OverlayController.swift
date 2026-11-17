@@ -12,7 +12,9 @@ struct ReminderDisplay: Identifiable, Equatable {
 
 @MainActor
 final class OverlayController {
-    var onAcknowledge: (() -> Void)?
+    /// The drink-along began; nothing is recorded yet.
+    var onDrinkStart: (() -> Void)?
+    /// The drink-along ran to its end: this is the moment a drink counts.
     var onDrink: (() -> Void)?
     var onSnooze: ((Int) -> Void)?
     var onPreviewEnd: (() -> Void)?
@@ -46,10 +48,13 @@ final class OverlayController {
     }
 
     var isActive: Bool { scene != nil }
+    /// Still open: neither snoozed nor drunk to the end. A drink under way
+    /// counts, because a snooze can still replace it.
     var isAwaitingAcknowledgment: Bool {
         guard let scene else { return false }
-        return !actionInvoked && (style == .compact || scene.isInteractive)
+        return !actionInvoked && (style == .compact || scene.isInteractive || scene.phase == .drinking)
     }
+    var isDrinking: Bool { !actionInvoked && scene?.phase == .drinking }
 
     @discardableResult
     func start(appearance: ReminderAppearance = .init(), style: ReminderStyle = .animated,
@@ -69,8 +74,10 @@ final class OverlayController {
                                    visibleBounds: localVisibleBounds(for: selected))
         let panel = makePanel(frame: selected.frame, ignoresMouse: true)
         panel.title = isPreview ? "喝水提醒预览" : "喝水提醒"
+        // A card has no entrance to wait for.
+        if style == .compact { scene?.advance(by: ReminderScene.descentDuration + 0.1) }
         let view = AnimationCanvas(frame: CGRect(origin: .zero, size: selected.frame.size))
-        view.onAcknowledge = { [weak self] in self?.acknowledge() }
+        view.onPress = { [weak self] in self?.beginDrinking() }
         panel.contentView = view
         canvasPanel = panel
         canvas = view
@@ -82,47 +89,19 @@ final class OverlayController {
         return true
     }
 
-    /// Character clicks confirm a drink and restart the regular interval,
-    /// sharing the same per-reminder action guard as the drink button.
-    func acknowledge() {
+    /// The drink button, a click on the character and the menu all start the
+    /// same drink-along. The reminder stays up for its whole length and the
+    /// drink is recorded only at the end, so a reflex click dismisses nothing.
+    func beginDrinking() {
         guard isActive, !actionInvoked else { return }
         if isPreview {
             stop()
             return
         }
-        if style == .compact {
-            let callback = onAcknowledge
-            stop()
-            callback?()
-            return
-        }
-        guard scene?.acknowledge() == true else { return }
-        actionInvoked = true
-        onAcknowledge?()
+        guard scene?.beginDrinking() == true else { return }
+        if timer == nil && !isSuspended { startTimer() }
         updateWindows()
-    }
-
-    /// Record the drink as soon as the user presses the button, while the
-    /// character continues its exit animation.
-    func confirmDrink() {
-        guard isActive, !actionInvoked else { return }
-        if isPreview {
-            stop()
-            return
-        }
-        actionInvoked = true
-        if style == .compact {
-            let callback = onDrink
-            stop()
-            callback?()
-            return
-        }
-        guard scene?.acknowledge() == true else {
-            actionInvoked = false
-            return
-        }
-        updateWindows()
-        onDrink?()
+        onDrinkStart?()
     }
 
     func snooze(minutes: Int) {
@@ -158,7 +137,7 @@ final class OverlayController {
         screenParametersChanged()
         canvasPanel?.orderFrontRegardless()
         updateWindows()
-        if style == .animated { startTimer() }
+        if style == .animated || isDrinking { startTimer() }
     }
 
     func screenParametersChanged() {
@@ -215,7 +194,20 @@ final class OverlayController {
         let current = CACurrentMediaTime()
         let elapsed = min(current - lastFrameTime, 1.0 / 12)
         lastFrameTime = current
+        advance(by: elapsed)
+    }
+
+    /// One animation step. The session checks call this to skip wall time.
+    func advance(by elapsed: Double) {
         scene?.advance(by: elapsed)
+        if let scene, !actionInvoked, !isPreview, scene.hasAcknowledged {
+            // The drink-along ran out, which is what confirms the drink.
+            actionInvoked = true
+            let callback = onDrink
+            if style == .compact { stop() }
+            callback?()
+        }
+        guard isActive else { return }
         if scene?.phase == .finished {
             stop()
             onFinished?()
@@ -240,12 +232,14 @@ final class OverlayController {
                 characterGlobalRegions = PixelArt.characterHitRegions(in: scene).map {
                     screenRect(for: $0, on: screen)
                 }
+            }
+            if scene.isInteractive || scene.phase == .drinking {
                 let layout = OverlayControls.animatedButtons(in: scene,
                                                              visibleBounds: localVisibleBounds(for: screen),
                                                              isPreview: isPreview)
                 buttonSpecs = layout.buttons
                 previewBadge = layout.badge
-                if scene.phase == .reminding {
+                if scene.phase != .descending {
                     blockerRegions = SceneRenderer.speechRegions(for: scene).map { screenRect(for: $0, on: screen) }
                 }
             }
@@ -253,14 +247,15 @@ final class OverlayController {
             self.scene?.isHovered = hovered
             synchronize(&characterPanels, to: characterGlobalRegions) { [weak self] in
                 let target = ClaudeClickTarget(frame: .zero)
-                target.onClick = { self?.acknowledge() }
+                target.onClick = { self?.beginDrinking() }
                 return target
             }
             canvas?.compactCardFrame = nil
         } else {
             let layout = OverlayControls.compactLayout(visibleBounds: localVisibleBounds(for: screen),
                                                        isPreview: isPreview,
-                                                       position: placement.position)
+                                                       position: placement.position,
+                                                       isDrinking: scene.phase == .drinking)
             buttonSpecs = layout.buttons
             blockerRegions = OverlayControls.compactCardRegions(layout.card).map { screenRect(for: $0, on: screen) }
             characterPanels.forEach { $0.orderOut(nil) }
@@ -275,9 +270,11 @@ final class OverlayController {
         canvas?.isPreview = isPreview
         canvas?.isCompact = style == .compact
         canvas?.scene = self.scene
+        // A card only changes while its drink bar fills.
         let painted = style == .animated
-            ? OverlayControls.animatedPaintedRegions(in: self.scene ?? scene, previewBadge: previewBadge) : []
-        if fullRedraw || style != .animated || lastPaintedRegions.isEmpty {
+            ? OverlayControls.animatedPaintedRegions(in: self.scene ?? scene, previewBadge: previewBadge)
+            : (canvas?.compactCardFrame.map { [$0.insetBy(dx: -8, dy: -8)] } ?? [])
+        if fullRedraw || lastPaintedRegions.isEmpty {
             canvas?.needsDisplay = true
         } else {
             // Clear where the previous frame painted and draw the new frame.
@@ -287,7 +284,7 @@ final class OverlayController {
 
         let accessibilityRegions = style == .animated ? characterGlobalRegions : []
         let characterLabel = scene.appearance.character == .claude ? "Claude" : "水滴精灵"
-        let actionLabel = isPreview ? "结束喝水提醒预览" : "关闭喝水提醒"
+        let actionLabel = isPreview ? "结束喝水提醒预览" : "去喝水"
         canvas?.updateAccessibility(frame: accessibilityRegions.reduce(CGRect.null) { $0.union($1) },
                                     interactive: !accessibilityRegions.isEmpty,
                                     label: "\(characterLabel)：\(actionLabel)",
@@ -326,9 +323,7 @@ final class OverlayController {
             // The canvas owns one coherent accessible surface for the character
             // and all controls, while these panels deliver physical clicks.
             panel.setAccessibilityElement(false)
-            let isPrimary = spec.action == .drink || spec.action == .endPreview
-            let button = OverlayButtonView(frame: .zero, title: spec.title,
-                                           theme: theme, isPrimary: isPrimary)
+            let button = OverlayButtonView(frame: .zero, title: spec.title, theme: theme)
             panel.contentView = button
             buttonPanels.append(panel)
             buttonViews.append(button)
@@ -340,6 +335,10 @@ final class OverlayController {
             }
             let spec = specs[index]
             let view = buttonViews[index]
+            // The same panel serves whichever button is in this slot now.
+            view.title = spec.title
+            view.isPrimary = spec.action == .drink || spec.action == .endPreview
+            buttonPanels[index].title = spec.title
             view.onPress = { [weak self] in self?.perform(spec.action) }
             let frame = screenRect(for: spec.frame, on: screen)
             if buttonPanels[index].frame != frame {
@@ -352,7 +351,7 @@ final class OverlayController {
 
     private func perform(_ action: OverlayControlAction) {
         switch action {
-        case .drink: confirmDrink()
+        case .drink: beginDrinking()
         case .snooze(let minutes): snooze(minutes: minutes)
         case .endPreview: endPreview()
         }
@@ -426,7 +425,7 @@ final class OverlayPanel: NSPanel {
 @MainActor
 private final class AnimationCanvas: NSView {
     var scene: ReminderScene?
-    var onAcknowledge: (() -> Void)?
+    var onPress: (() -> Void)?
     var reminderAppearance = ReminderAppearance()
     var isPreview = false
     var isCompact = false
@@ -442,7 +441,7 @@ private final class AnimationCanvas: NSView {
         accessibleCharacter.setAccessibilityRole(.button)
         accessibleCharacter.setAccessibilityEnabled(true)
         accessibleCharacter.setAccessibilityParent(self)
-        accessibleCharacter.onPress = { [weak self] in self?.onAcknowledge?() }
+        accessibleCharacter.onPress = { [weak self] in self?.onPress?() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -453,7 +452,7 @@ private final class AnimationCanvas: NSView {
         accessibleCharacter.setAccessibilityLabel(label)
         accessibleCharacter.setAccessibilityHelp(isPreview
             ? "点击结束预览。"
-            : "点击记录一次喝水、收起提醒并重新开始计时。")
+            : "点击后角色陪你喝水约 20 秒，喝完记录一次喝水并重新开始计时。")
         while accessibleButtons.count < buttons.count {
             let button = AccessibleReminderCharacter()
             button.setAccessibilityRole(.button)
@@ -475,7 +474,9 @@ private final class AnimationCanvas: NSView {
         context.clear(dirtyRect)
         if isCompact, let compactCardFrame {
             OverlayControls.drawCompactCard(compactCardFrame, in: context,
-                                            appearance: reminderAppearance, isPreview: isPreview)
+                                            appearance: reminderAppearance, isPreview: isPreview,
+                                            drinkingProgress: scene?.phase == .drinking
+                                                ? scene?.drinkingProgress : nil)
         } else if let scene {
             SceneRenderer.draw(scene, in: context)
         }

@@ -30,7 +30,7 @@ public struct CountdownStatus: Equatable {
         } else if schedule.isAwaitingAcknowledgment {
             title = "等待你的确认"
             replacement = "喝口水吧"
-            detail = "喝水后点提醒里或下面的按钮，也可以稍后再提醒"
+            detail = "点“去喝水”，喝完自动记录；也可以稍后再提醒"
         } else if schedule.isAway {
             title = "离开暂停"
             replacement = nil

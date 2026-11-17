@@ -28,7 +28,7 @@ enum OverlayControls {
 
     static func animatedButtons(in scene: ReminderScene, visibleBounds: CGRect,
                                 isPreview: Bool) -> (buttons: [OverlayButtonSpec], badge: CGRect?) {
-        guard scene.phase == .reminding else { return ([], nil) }
+        guard scene.phase == .reminding || scene.phase == .drinking else { return ([], nil) }
         let width = 204.0
         let primaryHeight = 42.0
         let rowHeight = 34.0
@@ -46,8 +46,7 @@ enum OverlayControls {
             buttons = [OverlayButtonSpec(action: .endPreview, title: "结束预览", frame: primary)]
         } else {
             let smallWidth = (width - gap) / 2
-            buttons = [
-                OverlayButtonSpec(action: .drink, title: "我刚喝过水", frame: primary),
+            let snoozes = [
                 OverlayButtonSpec(action: .snooze(10), title: "10 分钟后",
                                   frame: CGRect(x: origin.x, y: origin.y + primaryHeight + gap,
                                                 width: smallWidth, height: rowHeight)),
@@ -56,6 +55,10 @@ enum OverlayControls {
                                                 y: origin.y + primaryHeight + gap,
                                                 width: smallWidth, height: rowHeight))
             ]
+            // The snoozes keep their places once the drink starts, so a second
+            // click where the drink button was lands on nothing.
+            buttons = scene.phase == .drinking ? snoozes
+                : [OverlayButtonSpec(action: .drink, title: "去喝水", frame: primary)] + snoozes
         }
         let badge = isPreview
             ? CGRect(x: origin.x, y: max(visibleBounds.minY, origin.y - 25), width: 55, height: 20)
@@ -78,7 +81,8 @@ enum OverlayControls {
 
     static func compactLayout(visibleBounds: CGRect,
                               isPreview: Bool,
-                              position: ReminderPosition = .random)
+                              position: ReminderPosition = .random,
+                              isDrinking: Bool = false)
         -> (card: CGRect, buttons: [OverlayButtonSpec]) {
         let cardWidth = min(276.0, max(220.0, visibleBounds.width - 20))
         let cardHeight = min(204.0, max(174.0, visibleBounds.height - 20))
@@ -101,24 +105,28 @@ enum OverlayControls {
                                        desired: desiredCardOrigin,
                                        within: visibleBounds)
         let card = CGRect(origin: cardOrigin, size: CGSize(width: cardWidth, height: cardHeight))
-        let inset = 18.0
-        let primaryY = card.minY + card.height - 94
-        let primary = CGRect(x: card.minX + inset, y: primaryY,
-                             width: card.width - inset * 2, height: 40)
+        let primary = compactPrimaryFrame(in: card)
         if isPreview {
             return (card, [OverlayButtonSpec(action: .endPreview, title: "结束预览", frame: primary)])
         }
         let gap = 8.0
         let smallWidth = (primary.width - gap) / 2
-        return (card, [
-            OverlayButtonSpec(action: .drink, title: "我刚喝过水", frame: primary),
+        let snoozes = [
             OverlayButtonSpec(action: .snooze(10), title: "10 分钟后",
                               frame: CGRect(x: primary.minX, y: primary.maxY + 8,
                                             width: smallWidth, height: 32)),
             OverlayButtonSpec(action: .snooze(20), title: "20 分钟后",
                               frame: CGRect(x: primary.minX + smallWidth + gap, y: primary.maxY + 8,
                                             width: smallWidth, height: 32))
-        ])
+        ]
+        // While drinking, the card draws a filling bar in the primary slot.
+        return (card, isDrinking ? snoozes
+            : [OverlayButtonSpec(action: .drink, title: "去喝水", frame: primary)] + snoozes)
+    }
+
+    /// Where the card's drink button sits, and its drink bar after a press.
+    static func compactPrimaryFrame(in card: CGRect) -> CGRect {
+        CGRect(x: card.minX + 18, y: card.minY + card.height - 94, width: card.width - 36, height: 40)
     }
 
     /// The card's fully painted body, matching `drawCompactCard` minus its
@@ -129,7 +137,8 @@ enum OverlayControls {
     }
 
     static func drawCompactCard(_ frame: CGRect, in context: CGContext,
-                                appearance: ReminderAppearance, isPreview: Bool) {
+                                appearance: ReminderAppearance, isPreview: Bool,
+                                drinkingProgress: Double? = nil) {
         let accent = WaterPalette.accents(for: appearance.theme)
         PixelArt.rect(context, frame.minX + 4, frame.minY + 5, frame.width, frame.height, accent.dark)
         PixelArt.rect(context, frame.minX + 2, frame.minY + 2, frame.width - 4,
@@ -154,14 +163,28 @@ enum OverlayControls {
             .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
             .foregroundColor: WaterPalette.ink
         ]
-        (isPreview ? "喝水提醒预览" : "该喝水啦")
+        (isPreview ? "喝水提醒预览" : (drinkingProgress == nil ? "该喝水啦" : "慢慢喝几口"))
             .draw(at: CGPoint(x: frame.minX + 76, y: frame.minY + 20), withAttributes: textAttributes)
         let detailAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: WaterPalette.rope
         ]
-        (isPreview ? "这是一次预览，不会记录喝水" : "休息一下，喝几口水")
+        (isPreview ? "这是一次预览，不会记录喝水"
+            : (drinkingProgress == nil ? "休息一下，喝几口水" : "进度走完后自动记录"))
             .draw(at: CGPoint(x: frame.minX + 76, y: frame.minY + 45), withAttributes: detailAttributes)
+        if let drinkingProgress {
+            let bar = compactPrimaryFrame(in: frame)
+            PixelArt.rect(context, bar.minX, bar.minY, bar.width, bar.height, accent.dark)
+            PixelArt.rect(context, bar.minX + 3, bar.minY + 3, bar.width - 6, bar.height - 6, WaterPalette.glint)
+            let steps = Double(((bar.width - 6) / 4).rounded(.down))
+            let filled = (min(max(drinkingProgress, 0), 1) * steps).rounded(.down) * 4
+            PixelArt.rect(context, bar.minX + 3, bar.minY + 3, filled, bar.height - 6, accent.light)
+            let label = "喝水中…" as NSString
+            let size = label.size(withAttributes: textAttributes)
+            label.draw(at: CGPoint(x: bar.midX - size.width / 2, y: bar.midY - size.height / 2 - 1),
+                       withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                                        .foregroundColor: WaterPalette.ink])
+        }
         if isPreview {
             drawPreviewBadge(CGRect(x: frame.maxX - 58, y: frame.minY + 76, width: 44, height: 18),
                              in: context, theme: appearance.theme)
@@ -191,17 +214,23 @@ enum OverlayControls {
 @MainActor
 final class OverlayButtonView: NSView {
     var onPress: (() -> Void)?
-    let title: String
+    var title: String {
+        didSet {
+            guard title != oldValue else { return }
+            setAccessibilityLabel(title)
+            setAccessibilityHelp("按下以执行：\(title)")
+            needsDisplay = true
+        }
+    }
     let theme: ReminderTheme
-    let isPrimary: Bool
+    var isPrimary = false { didSet { if isPrimary != oldValue { needsDisplay = true } } }
     private var tracking: NSTrackingArea?
     private var isHovered = false
     private var isPressed = false
 
-    init(frame: CGRect, title: String, theme: ReminderTheme, isPrimary: Bool) {
+    init(frame: CGRect, title: String, theme: ReminderTheme) {
         self.title = title
         self.theme = theme
-        self.isPrimary = isPrimary
         super.init(frame: frame)
         setAccessibilityElement(false)
         setAccessibilityRole(.button)

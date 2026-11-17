@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 public enum ReminderPhase: String {
-    case descending, reminding, acknowledging, ascending, finished
+    case descending, reminding, drinking, acknowledging, ascending, finished
 }
 
 public enum ReminderEdge: String, CaseIterable {
@@ -48,6 +48,9 @@ public struct WaterParticle {
 /// the same poses, trajectories and state transitions as the desktop app.
 public struct ReminderScene {
     public static let descentDuration = 1.85
+    /// Long enough to pick up a glass and take a few sips. The drink counts
+    /// only when this has run out, so a reflex click cannot dismiss a reminder.
+    public static let standardDrinkingDuration = 20.0
     public static let acknowledgmentDuration = 0.55
     public static let ascentDuration = 2.05
     public static let throwPeriod = 1.35
@@ -61,6 +64,8 @@ public struct ReminderScene {
     public let appearance: ReminderAppearance
     /// A settings-page preview: it looks the same but records nothing.
     public let isPreview: Bool
+    /// Shorter only where the artwork has to fit a drink into a few seconds.
+    public let drinkingDuration: Double
     public private(set) var phaseTime = 0.0
     public private(set) var time = 0.0
     public private(set) var bottles: [FlyingBottle] = []
@@ -68,10 +73,14 @@ public struct ReminderScene {
     public private(set) var throwCount = 0
     public var isHovered = false
     private var retirementStart = CGPoint.zero
+    /// A click during the entrance starts the drink once the character arrives.
+    private var drinksOnArrival = false
 
     public init(viewport: CGSize, topInset: Double = 24,
                 appearance: ReminderAppearance = .init(), isPreview: Bool = false,
-                entrance: ReminderEntrance = .init(), visibleBounds: CGRect? = nil) {
+                entrance: ReminderEntrance = .init(), visibleBounds: CGRect? = nil,
+                drinkingDuration: Double = standardDrinkingDuration) {
+        self.drinkingDuration = drinkingDuration
         self.viewport = viewport
         self.topInset = topInset
         self.appearance = appearance
@@ -131,6 +140,8 @@ public struct ReminderScene {
                 ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
             return CGPoint(x: target.x + (facesLeft ? recoil : -recoil) + sin(phaseTime * 2.1) * 3,
                            y: target.y + sin(phaseTime * 3.2) * 3)
+        case .drinking:
+            return target
         case .acknowledging:
             return CGPoint(x: retirementStart.x, y: retirementStart.y - sin(phaseTime * .pi / 0.55) * 5)
         case .ascending:
@@ -163,13 +174,24 @@ public struct ReminderScene {
     public var isInteractive: Bool { phase == .descending || phase == .reminding }
     public var isClimbing: Bool { phase == .ascending && usesRope }
     public var hasAcknowledged: Bool { phase == .acknowledging || phase == .ascending || phase == .finished }
+    /// From 0 to 1 over the drink; 0 in every other phase.
+    public var drinkingProgress: Double {
+        phase == .drinking ? min(phaseTime / drinkingDuration, 1) : 0
+    }
 
+    /// The person says they are going to drink. The character stops throwing
+    /// and drinks along; false when a drink is already under way or over.
     @discardableResult
-    public mutating func acknowledge() -> Bool {
-        guard isInteractive else { return false }
-        retirementStart = characterPosition
-        phase = .acknowledging
-        phaseTime = 0
+    public mutating func beginDrinking() -> Bool {
+        switch phase {
+        case .descending where !drinksOnArrival:
+            drinksOnArrival = true
+        case .reminding:
+            phase = .drinking
+            phaseTime = 0
+        default:
+            return false
+        }
         isHovered = false
         return true
     }
@@ -202,12 +224,16 @@ public struct ReminderScene {
 
         switch phase {
         case .descending where phaseTime >= Self.descentDuration:
-            phase = .reminding
+            phase = drinksOnArrival ? .drinking : .reminding
             phaseTime -= Self.descentDuration
         case .reminding:
             let previousCycle = floor((previousPhaseTime - Self.releaseTime) / Self.throwPeriod)
             let currentCycle = floor((phaseTime - Self.releaseTime) / Self.throwPeriod)
             if currentCycle > previousCycle { throwBottle() }
+        case .drinking where phaseTime >= drinkingDuration:
+            retirementStart = characterPosition
+            phase = .acknowledging
+            phaseTime -= drinkingDuration
         case .acknowledging where phaseTime >= Self.acknowledgmentDuration:
             phase = .ascending
             phaseTime -= Self.acknowledgmentDuration

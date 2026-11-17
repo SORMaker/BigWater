@@ -429,13 +429,15 @@ struct ReminderChecks {
                 var scene = ReminderScene(viewport: CGSize(width: 640, height: 420),
                                           appearance: ReminderAppearance(character: character),
                                           entrance: ReminderEntrance(edge: edge, position: edge == .top ? 0 : 1),
-                                          visibleBounds: CGRect(x: 40, y: 24, width: 600, height: 320))
-                var steps = [0.2, 0.9, 0.95, 0.6, 0.35, 0.45, 0.7, 1.1, 0.3, 0.5, 0.25, 0.8]
+                                          visibleBounds: CGRect(x: 40, y: 24, width: 600, height: 320),
+                                          drinkingDuration: 2.5)
+                // The drink covers both the sipping and the lowered bottle.
+                var steps = [0.2, 0.9, 0.95, 0.6, 0.35, 0.45, 0.7, 1.1, 0.3, 0.5, 0.25, 0.8, 0.9, 0.9]
                 var frame = 0
                 while scene.phase != .finished, !steps.isEmpty {
                     scene.advance(by: steps.removeFirst())
                     frame += 1
-                    if frame == 9 { scene.acknowledge() }
+                    if frame == 6 { scene.beginDrinking() }
                     let regions = SceneRenderer.paintedRegions(of: scene)
                     let hits = PixelArt.characterHitRegions(in: scene)
                     let bounds = scene.visibleBounds
@@ -523,8 +525,12 @@ struct ReminderChecks {
                     case .right: try expect(resting.x < entered.x, "Right arrival went right")
                     }
                     let previousThrows = scene.throwCount
-                    try expect(scene.acknowledge() && !scene.acknowledge(), "Directional click was ignored or repeated")
-                    scene.advance(by: 1.6)
+                    try expect(scene.beginDrinking() && !scene.beginDrinking(),
+                               "Directional click was ignored or repeated")
+                    scene.advance(by: ReminderScene.standardDrinkingDuration - 0.5)
+                    try expect(scene.phase == .drinking && scene.characterPosition == scene.target,
+                               "\(edge) did not stay put for the drink")
+                    scene.advance(by: 0.5 + 1.6)
                     let leaving = scene.characterPosition
                     switch edge {
                     case .top: try expect(leaving.y < resting.y, "Top departure went downward")
@@ -541,8 +547,8 @@ struct ReminderChecks {
                     var early = ReminderScene(viewport: size, appearance: ReminderAppearance(character: character),
                                               entrance: entrance, visibleBounds: visible)
                     early.advance(by: 0.35)
-                    try expect(early.acknowledge(), "\(edge) early click was ignored")
-                    early.advance(by: 3)
+                    try expect(early.beginDrinking(), "\(edge) early click was ignored")
+                    early.advance(by: ReminderScene.standardDrinkingDuration + 5)
                     try expect(early.phase == .finished && early.throwCount == 0, "\(edge) early click failed to exit")
                 }
             }
@@ -557,7 +563,9 @@ struct ReminderChecks {
                 var scene = ReminderScene(viewport: CGSize(width: 1_440, height: 900), entrance: entrance)
                 targets.append(scene.target)
                 scene.advance(by: 2.3)
-                scene.acknowledge()
+                scene.beginDrinking()
+                scene.advance(by: ReminderScene.standardDrinkingDuration + 0.2)
+                try expect(scene.phase == .acknowledging, "The drink did not end in a goodbye")
                 let offset = CGPoint(x: scene.characterPosition.x - scene.target.x,
                                      y: scene.characterPosition.y - scene.target.y)
                 let facesLeft = scene.facesLeft
@@ -655,10 +663,18 @@ struct ReminderChecks {
         scene.advance(by: 5)
         try expect(scene.throwCount >= 3, "Claude did not keep throwing bottles")
         let previousThrowCount = scene.throwCount
-        try expect(scene.acknowledge(), "First click was ignored")
-        try expect(!scene.acknowledge(), "Repeated click changed animation state")
-        scene.advance(by: 0.6)
-        try expect(scene.phase == .ascending, "Click did not start climbing")
+        try expect(scene.beginDrinking(), "First click was ignored")
+        try expect(!scene.beginDrinking(), "Repeated click changed animation state")
+        scene.advance(by: 10)
+        try expect(scene.phase == .drinking && abs(scene.drinkingProgress - 0.5) < 0.01
+                   && scene.characterPosition == scene.target,
+                   "A click ended the reminder instead of starting the 20-second drink")
+        try expect(SceneRenderer.speechRegions(for: scene).count == 4, "The drink has no progress bubble")
+        scene.advance(by: 9.9)
+        try expect(scene.phase == .drinking && !scene.hasAcknowledged, "The drink ended early")
+        scene.advance(by: 0.7)
+        try expect(scene.phase == .ascending && scene.drinkingProgress == 0,
+                   "The finished drink did not start climbing")
         scene.advance(by: 2.1)
         try expect(scene.phase == .finished, "Climb did not finish")
         try expect(scene.throwCount == previousThrowCount, "Claude kept throwing after click")
@@ -739,8 +755,12 @@ struct ReminderChecks {
     func earlyClickDuringDescent() throws {
         var scene = ReminderScene(viewport: CGSize(width: 900, height: 600))
         scene.advance(by: 0.3)
-        try expect(scene.acknowledge(), "Click during descent was ignored")
+        try expect(scene.beginDrinking() && !scene.beginDrinking(), "Click during descent was ignored or repeated")
+        try expect(scene.phase == .descending, "An early click cut the entrance short")
         scene.advance(by: 3)
+        try expect(scene.phase == .drinking && scene.characterPosition == scene.target,
+                   "An early click did not start the drink on arrival")
+        scene.advance(by: ReminderScene.standardDrinkingDuration + 3)
         try expect(scene.phase == .finished, "Early click did not produce a full departure")
         try expect(scene.throwCount == 0, "Early click still threw water")
     }
@@ -787,8 +807,8 @@ struct ReminderChecks {
             let regions = PixelArt.characterHitRegions(in: scene)
             try expect(!regions.isEmpty && regions.allSatisfy { bounds.contains($0) }, "Droplet input escaped its display")
             try expect(regions.contains { $0.contains(scene.characterPosition) }, "Droplet's center could not be clicked")
-            try expect(scene.acknowledge(), "Droplet click failed")
-            scene.advance(by: 3)
+            try expect(scene.beginDrinking(), "Droplet click failed")
+            scene.advance(by: ReminderScene.standardDrinkingDuration + 3)
             try expect(scene.phase == .finished, "Droplet exit never finished")
         }
     }
@@ -835,7 +855,7 @@ enum BigWaterChecks {
             ("every edge enters, throws inward and departs through its origin", suite.allEdgesEnterThrowAndDepart),
             ("edge positions and departure survive resizing", suite.entrancePositionSurvivesResize),
             ("arrivals never catch Dock or menu bar clicks", suite.enteringCharactersNeverCatchDockClicks),
-            ("descent, continuous throwing, click and climb", suite.slideThrowClickAndClimb),
+            ("descent, throwing, 20-second drink-along and climb", suite.slideThrowClickAndClimb),
             ("early click during descent", suite.earlyClickDuringDescent),
             ("bounded objects over a long reminder", suite.persistentReminderHasBoundedParticles),
             ("only Claude's visible pixels intercept clicks", suite.hitRegionsExcludeRopeWaterAndTransparentGaps),

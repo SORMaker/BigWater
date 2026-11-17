@@ -46,12 +46,12 @@ func storyboard() -> NSImage {
     PixelArt.image(size: CGSize(width: 960, height: 362), backingScale: 1) { context in
         PixelArt.rect(context, 0, 0, 960, 362, WaterPalette.cream)
         label("Big Water", at: CGPoint(x: 32, y: 20), size: 30, color: WaterPalette.ink, serif: true)
-        label("蓝帽子 Claude · 大瓶矿泉水 · 点一下，爬绳收工", at: CGPoint(x: 34, y: 62), size: 13,
+        label("蓝帽子 Claude · 大瓶矿泉水 · 点一下，陪你喝完再收工", at: CGPoint(x: 34, y: 62), size: 13,
               color: WaterPalette.rope)
-        let phases: [ReminderPhase] = [.descending, .reminding, .reminding, .ascending]
-        let times = [0.6, 0.43, 0.64, 0.24]
-        let titles = ["SLIDE", "WIND UP", "THROW!", "CLIMB"]
-        let captions = ["沿绳子滑下来", "举起大水，蓄力", "持续扔水，等你点击", "点击后沿绳爬回去"]
+        let phases: [ReminderPhase] = [.descending, .reminding, .drinking, .ascending]
+        let times = [0.6, 0.64, 0.8, 0.24]
+        let titles = ["SLIDE", "THROW!", "DRINK", "CLIMB"]
+        let captions = ["沿绳子滑下来", "持续扔水，等你点击", "点击后陪你喝 20 秒", "喝完记录，沿绳爬回去"]
         for index in 0..<4 {
             let x = 28.0 + Double(index) * 234
             PixelArt.rect(context, x, 102, 218, 224, .white.withAlphaComponent(0.55))
@@ -60,13 +60,13 @@ func storyboard() -> NSImage {
             let point = CGPoint(x: 112, y: 106)
             PixelArt.rope(in: context, x: 64, from: 0, to: 146)
             PixelArt.claude(in: context, at: point, phase: phases[index], poseTime: times[index])
-            if index == 2 {
+            if index == 1 {
                 PixelArt.bottle(in: context, at: CGPoint(x: 168, y: 142), scale: 2.5, angle: 0.55)
             }
             PixelArt.pixelText(titles[index], in: context,
                               at: CGPoint(x: (218 - Double(titles[index].count) * 12) / 2, y: 166),
                               scale: 2, color: WaterPalette.clay)
-            label(captions[index], at: CGPoint(x: index == 2 ? 40 : 50, y: 194), size: 12,
+            label(captions[index], at: CGPoint(x: index == 0 ? 73 : 49, y: 194), size: 12,
                   color: WaterPalette.rope)
             context.restoreGState()
         }
@@ -79,13 +79,17 @@ func animationFrame(_ scene: ReminderScene) -> NSImage {
         label("Big Water", at: CGPoint(x: 32, y: 32), size: 36, color: WaterPalette.ink, serif: true)
         label("一个有点执着的喝水提醒。", at: CGPoint(x: 34, y: 84), size: 15, color: WaterPalette.rope)
         SceneRenderer.draw(scene, in: context)
-        let caption = scene.hasAcknowledged ? "点击后停止扔水，沿绳子爬走" : "蓝帽子上班 · 点击 Claude 收工"
+        let caption = scene.hasAcknowledged ? "喝完记一次，沿绳子爬走"
+            : (scene.phase == .drinking ? "点击后停止扔水，陪你喝一会儿" : "蓝帽子上班 · 点击 Claude 一起喝水")
         label(caption, at: CGPoint(x: 34, y: 592), size: 13, color: WaterPalette.rope)
     }
 }
 
+/// The GIFs loop in under ten seconds, so their drink is cut short.
+let demoDrinkingDuration = 2.4
+
 func saveAnimation(to url: URL) throws {
-    let count = 102
+    let count = 108
     let fps = 12.0
     guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString,
                                                             count, nil) else {
@@ -93,9 +97,10 @@ func saveAnimation(to url: URL) throws {
     }
     CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
         [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
-    var scene = ReminderScene(viewport: CGSize(width: 960, height: 640), topInset: 0)
+    var scene = ReminderScene(viewport: CGSize(width: 960, height: 640), topInset: 0,
+                              drinkingDuration: demoDrinkingDuration)
     for frame in 0..<count {
-        if frame == 67 { scene.acknowledge() }
+        if frame == 46 { scene.beginDrinking() }
         let image = animationFrame(scene)
         guard let bitmap = image.representations.first as? NSBitmapImageRep,
               let cgImage = bitmap.cgImage else { throw ArtworkError.cannotEncodeImage }
@@ -125,7 +130,7 @@ func entranceFrame(_ scenes: [ReminderScene]) -> NSImage {
 }
 
 func saveEntranceAnimation(to directory: URL) throws {
-    let count = 102
+    let count = 108
     let fps = 12.0
     let url = directory.appendingPathComponent("entrances.gif")
     guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString,
@@ -136,11 +141,12 @@ func saveEntranceAnimation(to directory: URL) throws {
         [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
     var scenes = ReminderEdge.allCases.map {
         ReminderScene(viewport: CGSize(width: 640, height: 420), topInset: 44,
-                      entrance: ReminderEntrance(edge: $0, position: 0.5))
+                      entrance: ReminderEntrance(edge: $0, position: 0.5),
+                      drinkingDuration: demoDrinkingDuration)
     }
     for frame in 0..<count {
-        if frame == 67 {
-            for index in scenes.indices { scenes[index].acknowledge() }
+        if frame == 46 {
+            for index in scenes.indices { scenes[index].beginDrinking() }
         }
         let image = entranceFrame(scenes)
         if frame == 30 { try savePNG(image, to: directory.appendingPathComponent("entrances.png")) }

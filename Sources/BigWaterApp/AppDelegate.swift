@@ -131,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.onLaunchAtLoginChange = { [weak self] in self?.changeLaunchAtLogin(to: $0) }
         settings.onOpenLoginSettings = { SMAppService.openSystemSettingsLoginItems() }
         settings.onQuit = { NSApp.terminate(nil) }
-        overlay.onAcknowledge = { [weak self] in self?.acknowledged() }
+        overlay.onDrinkStart = { [weak self] in self?.updateSettings() }
         overlay.onDrink = { [weak self] in self?.acknowledged() }
         overlay.onSnooze = { [weak self] in self?.snooze(minutes: $0) }
         overlay.onPreviewEnd = { [weak self] in
@@ -225,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             item.isEnabled = enabled
             menu.addItem(item)
         }
-        add("我刚喝过水", #selector(quickDrink), enabled: settings.canRecordDrink)
+        add(settings.drinkTitle, #selector(quickDrink), enabled: settings.canRecordDrink)
         add("撤销刚才的喝水记录", #selector(quickUndo), enabled: settings.canUndoDrink)
         menu.addItem(.separator())
         add("暂停 30 分钟", #selector(quickPauseThirty))
@@ -270,8 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let uptime = uptimeNow()
         schedule.update(at: now, uptime: uptime, isSessionActive: canPresentReminder)
         guard wasOutstanding else { checkReminder(); return }
-        // A click on the character or drink button confirms the outstanding
-        // reminder, even if it wins the race with the daily closing callback.
+        // A drink-along that ran to its end confirms the outstanding reminder,
+        // even if it wins the race with the daily closing callback.
         recordDrink(at: now, uptime: uptime)
     }
 
@@ -327,13 +327,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         checkReminder()
     }
 
-    /// Menu actions go through the visible reminder when there is one, so it
-    /// plays the same exit as a click on its own button.
+    /// Menu actions go through the visible reminder when there is one, so the
+    /// menu is no shortcut around its drink-along.
     private func drinkFromMenu() {
         if !isPreviewing && overlay.isActive {
             // A second menu click during the same exit is still the same drink.
             guard schedule.isAwaitingAcknowledgment else { return }
-            if overlay.isAwaitingAcknowledgment { overlay.confirmDrink(); return }
+            if overlay.isAwaitingAcknowledgment { overlay.beginDrinking(); return }
         }
         overlay.stop()
         isPreviewing = false
@@ -478,7 +478,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.history = history
         settings.currentDate = now
         settings.canUndoDrink = drinkUndo.map { history.drinks.contains($0.date) } ?? false
-        settings.canRecordDrink = isPreviewing || !overlay.isActive || schedule.isAwaitingAcknowledgment
+        settings.isDrinking = !isPreviewing && overlay.isDrinking
+        settings.canRecordDrink = isPreviewing || !overlay.isActive
+            || (schedule.isAwaitingAcknowledgment && !overlay.isDrinking)
         settings.displays = OverlayController.availableDisplays
         settings.menuBarStatus = MenuBarStatus(schedule: schedule, canPresentReminder: canPresentReminder)
         let status = CountdownStatus(schedule: schedule, canPresentReminder: canPresentReminder, now: now)

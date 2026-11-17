@@ -18,6 +18,12 @@ final class SettingsModel: ObservableObject {
     @Published var history = HydrationHistory()
     @Published var currentDate = Date()
     @Published var canRecordDrink = true
+    @Published var isDrinking = false
+    /// With a reminder up, the drink action starts its drink-along instead
+    /// of recording at once, and the label says so.
+    var drinkTitle: String {
+        isDrinking ? "喝水中…" : (isAwaitingAcknowledgment ? "去喝水" : "我刚喝过水")
+    }
     @Published var canUndoDrink = false
     @Published var displays: [ReminderDisplay] = []
     @Published var menuBarStatus = MenuBarStatus(schedule: ReminderSchedule(), canPresentReminder: true)
@@ -255,7 +261,7 @@ struct SettingsView: View {
     private var reminderActions: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Button("我刚喝过水") { model.onDrink?() }
+                Button(model.drinkTitle) { model.onDrink?() }
                     .buttonStyle(.borderedProminent).tint(clay)
                     .disabled(!model.canRecordDrink)
                 if model.canUndoDrink {

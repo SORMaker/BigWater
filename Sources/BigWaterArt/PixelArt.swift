@@ -106,6 +106,30 @@ public enum PixelArt {
                      point.y + 8 + Double(index) * 7, 6, 3, WaterPalette.accents(for: theme).light)
             }
         }
+        if phase == .drinking {
+            drinkingBottle(in: context, at: point, poseTime: poseTime, theme: theme,
+                           hand: hovered ? WaterPalette.clayLight : WaterPalette.clay)
+        }
+    }
+
+    /// Each sip tips the bottle up for a moment, then lowers it for a breath.
+    static func isSipping(_ poseTime: Double) -> Bool {
+        poseTime.truncatingRemainder(dividingBy: 2.4) < 1.6
+    }
+
+    /// The bottle held to the mouth, with the hand painted over it. `point`
+    /// is the character's center; both characters hold it on the same side.
+    private static func drinkingBottle(in context: CGContext, at point: CGPoint, poseTime: Double,
+                                       theme: ReminderTheme, hand: NSColor, reach: Double = 0) {
+        let x = (point.x / 4).rounded() * 4 + reach
+        let y = (point.y / 4).rounded() * 4
+        if isSipping(poseTime) {
+            bottle(in: context, at: CGPoint(x: x + 50, y: y - 2), scale: 1.5, angle: -2 * .pi / 3, theme: theme)
+            rect(context, x + 44, y - 4, 16, 12, hand)
+        } else {
+            bottle(in: context, at: CGPoint(x: x + 56, y: y + 8), scale: 1.5, angle: -5 * .pi / 12, theme: theme)
+            rect(context, x + 48, y + 4, 16, 12, hand)
+        }
     }
 
     private struct PixelBlock {
@@ -123,6 +147,7 @@ public enum PixelArt {
         let accent = WaterPalette.accents(for: theme)
         let climbing = phase == .ascending && usesRope
         let traveling = climbing || (!usesRope && (phase == .descending || phase == .ascending))
+        let sipping = phase == .drinking && isSipping(poseTime)
         let happy = phase == .acknowledging || phase == .ascending
         let grip = Int(poseTime * 7) % 2
         let cycle = poseTime.truncatingRemainder(dividingBy: ReminderScene.throwPeriod)
@@ -158,7 +183,7 @@ public enum PixelArt {
         paint(8, 21, 16, 2, WaterPalette.clayShadow)
         paint(9, 21, 14, 1, clay)
         let blinking = !happy && Int(poseTime * 10) % 43 == 37
-        if happy || blinking {
+        if happy || blinking || sipping {
             paint(11, 17, 3, 1, WaterPalette.ink)
             paint(19, 17, 3, 1, WaterPalette.ink)
         } else {
@@ -177,6 +202,8 @@ public enum PixelArt {
         } else if phase == .reminding && cycle >= ReminderScene.releaseTime && cycle < 0.87 {
             paint(24, 16, 5, 3, clay)
             paint(29, 15, 3, 3, WaterPalette.clayLight)
+        } else if phase == .drinking {
+            paint(24, sipping ? 15 : 17, 4, 3, clay)
         } else if phase == .acknowledging {
             let wave = Int(poseTime * 12) % 2 == 0 ? 0.0 : 1.0
             paint(24, 12, 2, 7, clay)
@@ -219,14 +246,19 @@ public enum PixelArt {
                             y: (point.y / 4).rounded() * 4 - 64 + bob)
         context.scaleBy(x: 4, y: 4)
         let accent = WaterPalette.accents(for: theme)
-        for block in dropletBlocks(accent: accent, hovered: hovered) {
+        let sipping = phase == .drinking && isSipping(poseTime)
+        for block in dropletBlocks(accent: accent, hovered: hovered, eyesClosed: sipping) {
             rect(context, block.frame.minX, block.frame.minY, block.frame.width, block.frame.height, block.color)
         }
         context.restoreGState()
+        if phase == .drinking {
+            drinkingBottle(in: context, at: point, poseTime: poseTime, theme: theme,
+                           hand: hovered ? accent.light : accent.base, reach: 8)
+        }
     }
 
     private static func dropletBlocks(accent: (base: NSColor, light: NSColor, dark: NSColor),
-                                      hovered: Bool) -> [PixelBlock] {
+                                      hovered: Bool, eyesClosed: Bool = false) -> [PixelBlock] {
         var blocks: [PixelBlock] = []
         func paint(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: NSColor) {
             blocks.append(PixelBlock(frame: CGRect(x: x, y: y, width: width, height: height), color: color))
@@ -254,8 +286,8 @@ public enum PixelArt {
         paint(5, 13, 2, 6, accent.dark)
         paint(4, 12, 3, 3, body)
         // Friendly eyes, blush pixels and a small smile distinguish it from Claude.
-        paint(12, 16, 2, 3, WaterPalette.ink)
-        paint(20, 16, 2, 3, WaterPalette.ink)
+        paint(12, eyesClosed ? 17 : 16, 2, eyesClosed ? 1 : 3, WaterPalette.ink)
+        paint(20, eyesClosed ? 17 : 16, 2, eyesClosed ? 1 : 3, WaterPalette.ink)
         paint(10, 19, 2, 1, WaterPalette.clayLight)
         paint(22, 19, 2, 1, WaterPalette.clayLight)
         paint(16, 20, 2, 1, WaterPalette.ink)
@@ -340,9 +372,11 @@ public enum PixelArt {
         }
     }
 
+    /// `drinkingProgress` (0...1) replaces the invitation with a filling bar
+    /// for as long as the character drinks along.
     public static func speech(in context: CGContext, at origin: CGPoint, acknowledged: Bool,
                               theme: ReminderTheme = .blue, isPreview: Bool = false,
-                              tailOnLeft: Bool = false) {
+                              tailOnLeft: Bool = false, drinkingProgress: Double? = nil) {
         context.saveGState()
         context.translateBy(x: (origin.x / 2).rounded() * 2, y: (origin.y / 2).rounded() * 2)
         let border = WaterPalette.rope
@@ -360,15 +394,27 @@ public enum PixelArt {
         rect(context, 178, 36, 6, 10, WaterPalette.cream)
         rect(context, 184, 40, 6, 2, WaterPalette.cream)
         context.restoreGState()
-        pixelText(acknowledged ? "GOOD JOB!" : "WATER TIME", in: context,
-                  at: CGPoint(x: acknowledged ? 36 : 30, y: 12), scale: 2,
+        let drinking = drinkingProgress != nil && !acknowledged
+        let title = acknowledged ? "GOOD JOB!" : (drinking ? "CHEERS!" : "WATER TIME")
+        pixelText(title, in: context,
+                  at: CGPoint(x: (180 - Double(title.count) * 12) / 2, y: drinking ? 8 : 12), scale: 2,
                   color: acknowledged ? WaterPalette.clay : WaterPalette.ink)
-        let secondary = acknowledged ? "喝口水，下次见" : (isPreview ? "这是预览效果" : "按钮记录喝水")
+        let secondary = acknowledged ? "喝好了，下次见"
+            : (drinking ? "慢慢喝，我陪你" : (isPreview ? "这是预览效果" : "点我，一起喝水"))
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: WaterPalette.rope
         ]
-        (secondary as NSString).draw(at: CGPoint(x: acknowledged ? 43 : 58, y: 37), withAttributes: attributes)
+        let width = (secondary as NSString).size(withAttributes: attributes).width
+        (secondary as NSString).draw(at: CGPoint(x: ((180 - width) / 2).rounded(), y: drinking ? 27 : 37),
+                                     withAttributes: attributes)
+        if drinking, let drinkingProgress {
+            let accent = WaterPalette.accents(for: theme)
+            rect(context, 28, 46, 124, 10, border)
+            rect(context, 30, 48, 120, 6, WaterPalette.glint)
+            // Fill in whole 4pt pixels so the bar steps like the rest of the art.
+            rect(context, 30, 48, (min(max(drinkingProgress, 0), 1) * 30).rounded(.down) * 4, 6, accent.base)
+        }
         context.restoreGState()
     }
 
@@ -470,7 +516,8 @@ public enum SceneRenderer {
         if let origin = speechOrigin(for: scene) {
             PixelArt.speech(in: context, at: origin,
                             acknowledged: scene.hasAcknowledged, theme: scene.appearance.theme,
-                            isPreview: scene.isPreview, tailOnLeft: !scene.facesLeft)
+                            isPreview: scene.isPreview, tailOnLeft: !scene.facesLeft,
+                            drinkingProgress: scene.phase == .drinking ? scene.drinkingProgress : nil)
         }
         context.saveGState()
         let spritePoint = CGPoint(x: (point.x / 4).rounded() * 4, y: (point.y / 4).rounded() * 4)
@@ -506,7 +553,8 @@ public enum SceneRenderer {
 
     /// Where the speech bubble is drawn, or nil while it is hidden.
     public static func speechOrigin(for scene: ReminderScene) -> CGPoint? {
-        guard scene.phase == .reminding || scene.phase == .acknowledging else { return nil }
+        guard scene.phase == .reminding || scene.phase == .drinking || scene.phase == .acknowledging
+        else { return nil }
         let point = scene.characterPosition
         let bounds = scene.visibleBounds
         let minX = bounds.minX + (scene.facesLeft ? 8 : 20)
