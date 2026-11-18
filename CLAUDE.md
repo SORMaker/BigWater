@@ -1,7 +1,7 @@
 # Big Water
 
 A macOS 13+ menu bar water reminder in Swift (SwiftPM, no Xcode project). A
-pixel mascot comes in from a screen edge and throws water bottles until the
+pixel mascot (Claude, a droplet, a wizard, a cactus or a whale) comes in from a screen edge and throws water bottles until the
 person says they will drink; it then drinks along for 20 seconds, and only a
 drink that runs to its end is recorded. The UI and README are in Chinese;
 code, comments and commit messages are in English.
@@ -10,7 +10,7 @@ code, comments and commit messages are in English.
 
 ```sh
 swift build                      # everything, debug
-swift run BigWaterTests          # all tests: about 5 seconds, opens no window
+swift run BigWaterTests          # all tests: about 10 seconds, opens no window
 swift run BigWaterTests away     # only tests whose suite or name contains "away"
 ./Tools/build.sh                 # release app at dist/Big Water.app
 ./Tools/run.sh --preview         # build, replace the running copy, show one real reminder
@@ -32,7 +32,8 @@ BigWaterCore   rules and state, no AppKit
   DrinkLog       when the person drank
   Preferences    settings      SavedState   what is written to disk
   ReminderScene  the animation as numbers: positions, phases, bottles
-  Sprites        the pixel art as data
+  Sprites        the pixel art as data; a new mascot is a case in `Mascot` plus its
+                 blocks and props here, and `throwsBottles` if it throws
   Reminder       one reminder on screen: what a click does, where its parts sit
   StatusText     the countdown in words
 BigWaterArt    Palette and Painter: turns the above into pixels

@@ -100,6 +100,35 @@ func storyboard() -> NSImage {
     }
 }
 
+/// Every mascot waiting, drinking and done, side by side.
+func lineup() -> NSImage {
+    let rows: [(title: String, pose: Pose)] = [
+        ("等你喝水", Pose(phase: .asking, time: 0.5, usesRope: false)),
+        ("陪你喝", Pose(phase: .drinking, time: 0.5, usesRope: false)),
+        ("喝完收工", Pose(phase: .cheering, time: 0.05, usesRope: false))
+    ]
+    let column = 184.0, rowHeight = 168.0, left = 96.0, top = 64.0
+    let size = CGSize(width: left + column * Double(Mascot.allCases.count) + 16, height: top + rowHeight * 3 + 16)
+    return Painter.image(size: size, scale: 1) { context in
+        fill(0, 0, size.width, size.height, Palette.cream, in: context)
+        for (index, mascot) in Mascot.allCases.enumerated() {
+            label(mascot.name, at: CGPoint(x: left + Double(index) * column + 70, y: 24), size: 15, color: Palette.ink)
+        }
+        for (row, item) in rows.enumerated() {
+            let y = top + Double(row) * rowHeight
+            label(item.title, at: CGPoint(x: 20, y: y + rowHeight / 2 - 10), size: 13, color: Palette.rope)
+            for (index, mascot) in Mascot.allCases.enumerated() {
+                let x = left + Double(index) * column
+                fill(x + 4, y + 4, column - 8, rowHeight - 8, .white.withAlphaComponent(0.55), in: context)
+                context.saveGState()
+                context.clip(to: CGRect(x: x + 4, y: y + 4, width: column - 8, height: rowHeight - 8))
+                Painter.mascot(mascot, pose: item.pose, at: CGPoint(x: x + 76, y: y + 96), in: context)
+                context.restoreGState()
+            }
+        }
+    }
+}
+
 /// A real 20-second drink would not fit a loop of under ten seconds.
 let shortDrink = 2.4
 let frameCount = 108
@@ -146,6 +175,7 @@ do {
     }
     try savePNG(storyboard(), to: output.appendingPathComponent("storyboard.png"))
     try savePNG(Painter.panelBottle(), to: output.appendingPathComponent("bottle.png"))
+    try savePNG(lineup(), to: output.appendingPathComponent("mascots.png"))
 
     var hero = ReminderScene(screen: ScreenSpace(size: CGSize(width: 960, height: 640), topInset: 0),
                              drinkTime: shortDrink)

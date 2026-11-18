@@ -55,6 +55,14 @@ enum Pictures {
             }
             try savePNG(picture(of: reminder), "\(name).png", to: directory)
         }
+        // Every mascot from the top, a few throws in.
+        for mascot in Mascot.allCases {
+            var reminder = Reminder(style: .animated, look: Look(theme: .blue, mascot: mascot),
+                                    screen: ScreenSpace(size: CGSize(width: 720, height: 450), topInset: 25),
+                                    entrance: Entrance(edge: .top, position: 0.3))
+            _ = reminder.advance(by: ReminderScene.entranceTime + 3.4)
+            try savePNG(picture(of: reminder), "mascot-\(mascot.rawValue).png", to: directory)
+        }
         print("Pictures: \(directory.path)")
     }
 

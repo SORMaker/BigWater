@@ -124,7 +124,7 @@ final class OverlayWindows: OverlaySurface {
         lastPainted = layout.painted
         if !canvasPanel.isVisible { canvasPanel.orderFrontRegardless() }
 
-        let mascotName = reminder.scene.look.mascot == .claude ? "Claude" : "水滴精灵"
+        let mascotName = reminder.scene.look.mascot.spokenName
         canvas.describe(mascotFrame: mascotFrames.reduce(CGRect.null) { $0.union($1) },
                         label: "\(mascotName)：\(reminder.isPreview ? "结束喝水提醒预览" : "去喝水")",
                         help: reminder.isPreview ? "点击结束预览。"

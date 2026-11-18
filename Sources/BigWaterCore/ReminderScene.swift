@@ -176,7 +176,7 @@ public struct ReminderScene: Equatable, Sendable {
             return travel(from: offscreen(beside: target), to: target, progress: 1 - pow(1 - t, 3),
                           sway: sin(t * .pi * 2) * 8)
         case .asking:
-            // Only Claude throws, so only Claude recoils.
+            // Only Claude throws by hand, so only Claude recoils.
             let recoiling = look.mascot == .claude && throwCycle > Self.releaseTime && throwCycle < 0.84
             let recoil = recoiling ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
             return CGPoint(x: target.x + (facesLeft ? recoil : -recoil) + sin(phaseTime * 2.1) * 3,
@@ -305,15 +305,20 @@ public struct ReminderScene: Equatable, Sendable {
     }
 
     private mutating func throwBottle() {
-        guard look.mascot == .claude else { return }
+        guard look.mascot.throwsBottles else { return }
         // Four throws of different strength and spin, in rotation.
         let variation = throwCount % 4
         let speed = [245.0, 90.0, 145.0, 155.0][variation]
         let spin = [-2.8, 2.1, -1.6, 2.9][variation]
         let from = mascotPosition
         let direction = facesLeft ? -1.0 : 1.0
-        bottles.append(FlyingBottle(position: CGPoint(x: from.x + direction * 54, y: from.y + 12),
-                                    velocity: CGVector(dx: direction * speed, dy: -130 - Double(variation) * 12),
+        // Claude throws from the hand; the wizard's bottles appear at the orb
+        // of the staff, already high, so they are sent off more gently.
+        let wizard = look.mascot == .wizard
+        let start = wizard ? CGPoint(x: Sprite.orb.x + 8, y: Sprite.orb.y) : CGPoint(x: 54, y: 12)
+        bottles.append(FlyingBottle(position: CGPoint(x: from.x + direction * start.x, y: from.y + start.y),
+                                    velocity: CGVector(dx: direction * speed,
+                                                       dy: (wizard ? -40 : -130) - Double(variation) * 12),
                                     angle: direction * -0.4, spin: direction * spin))
         throwCount += 1
     }

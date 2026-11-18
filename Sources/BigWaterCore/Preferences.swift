@@ -7,8 +7,41 @@ public enum ReminderStyle: String, Codable, CaseIterable, Sendable {
     case compact
 }
 
+/// Who comes to remind. The raw values are saved, so they stay as they are;
+/// a build that does not know a newer one falls back to Claude.
 public enum Mascot: String, Codable, CaseIterable, Sendable {
     case claude, droplet
+    /// Claude in a pointed hat, conjuring bottles with a staff.
+    case wizard
+    /// A potted cactus that wilts while it waits.
+    case cactus
+    /// A small whale that spouts while it waits.
+    case whale
+
+    /// As the picker shows it.
+    public var name: String {
+        switch self {
+        case .claude: return "Claude"
+        case .droplet: return "水滴"
+        case .wizard: return "魔法师"
+        case .cactus: return "仙人掌"
+        case .whale: return "小鲸鱼"
+        }
+    }
+
+    /// As VoiceOver reads it on the reminder.
+    public var spokenName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .droplet: return "水滴精灵"
+        case .wizard: return "魔法师 Claude"
+        case .cactus: return "仙人掌"
+        case .whale: return "小鲸鱼"
+        }
+    }
+
+    /// Sends bottles flying while it waits for an answer.
+    public var throwsBottles: Bool { self == .claude || self == .wizard }
 }
 
 public enum Theme: String, Codable, CaseIterable, Sendable {

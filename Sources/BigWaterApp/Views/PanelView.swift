@@ -331,11 +331,7 @@ struct MorePage: View {
             Divider()
             section("角色与外观") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("角色", selection: model.binding(\.look.mascot)) {
-                        Text("Claude").tag(Mascot.claude)
-                        Text("水滴").tag(Mascot.droplet)
-                    }
-                    .pickerStyle(.segmented)
+                    MascotPicker(selection: model.binding(\.look.mascot), theme: model.preferences.look.theme)
                     Picker("配色", selection: model.binding(\.look.theme)) {
                         Text("海蓝").tag(Theme.blue)
                         Text("薄荷").tag(Theme.mint)
@@ -417,5 +413,39 @@ struct MorePage: View {
             }
         }
         .pickerStyle(.menu)
+    }
+}
+
+/// The characters as little portraits, one tile each.
+struct MascotPicker: View {
+    @Binding var selection: Mascot
+    let theme: Theme
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Mascot.allCases, id: \.self) { mascot in
+                let chosen = mascot == selection
+                Button { selection = mascot } label: {
+                    VStack(spacing: 2) {
+                        Image(nsImage: Painter.portrait(mascot, theme: theme))
+                            .interpolation(.none)
+                            .frame(width: 48, height: 48)
+                        Text(mascot.name).font(.system(size: 11, weight: chosen ? .semibold : .regular))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(chosen ? Color.white : Color.white.opacity(0.35))
+                    .overlay(Rectangle().stroke(chosen ? PanelStyle.clay : PanelStyle.ink.opacity(0.1),
+                                                lineWidth: chosen ? 2 : 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mascot.spokenName)
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("角色")
     }
 }

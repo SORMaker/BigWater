@@ -98,6 +98,39 @@ let reminderSuite = Suite(name: "reminder", tests: [
         expect(widest.claude > 6 && widest.droplet <= 3, "\(widest)")
     },
 
+    test("the wizard conjures bottles at its staff; the cactus and the whale throw nothing") {
+        var counts: [Mascot: Int] = [:]
+        for mascot in Mascot.allCases {
+            var reminder = animated(mascot)
+            _ = run(&reminder, for: arrival + 6)
+            counts[mascot] = reminder.scene.throwCount
+            if mascot == .wizard {
+                // Just released: the newest bottle is still by the orb, above the mascot.
+                var fresh = animated(.wizard)
+                _ = run(&fresh, for: arrival + ReminderScene.releaseTime + 0.05)
+                let bottle = fresh.scene.bottles.last?.position ?? .zero
+                let centre = fresh.scene.mascotPosition
+                expect(bottle.y < centre.y - 30, "appears high, at the orb, not at a hand: \(bottle) vs \(centre)")
+            }
+        }
+        expectEqual(counts, [.claude: 5, .wizard: 5, .droplet: 0, .cactus: 0, .whale: 0])
+    },
+
+    test("every mascot fits its grid and can be clicked in the middle") {
+        for mascot in Mascot.allCases {
+            for phase in [ReminderScene.Phase.entering, .asking, .drinking, .cheering, .leaving] {
+                for time in stride(from: 0.0, to: 2.5, by: 0.1) {
+                    let pose = Pose(phase: phase, time: time)
+                    let grid = CGRect(x: 0, y: 0, width: Sprite.side, height: Sprite.side)
+                    expect(Sprite.mascot(mascot, pose: pose).allSatisfy { grid.contains($0.rect) },
+                           "\(mascot) \(phase) at \(time)")
+                    expect(Sprite.solidArea(mascot, pose: pose).contains { $0.contains(CGPoint(x: 1, y: 1)) },
+                           "\(mascot) \(phase) has a hole in the middle")
+                }
+            }
+        }
+    },
+
     test("a slow frame does not skip a throw") {
         var smooth = animated()
         var choppy = animated()

@@ -91,6 +91,16 @@ let dataSuite = Suite(name: "data", tests: [
         expectEqual(odd, expected, "one unknown value must not cost its neighbours")
     },
 
+    test("the new characters are saved by name, and an unknown one falls back to Claude") {
+        for mascot in Mascot.allCases {
+            var preferences = Preferences()
+            preferences.look.mascot = mascot
+            expectEqual(try decode(Preferences.self, json(preferences)).look.mascot, mascot)
+        }
+        expectEqual(json(Look(mascot: .wizard)), #"{"character":"wizard","theme":"blue"}"#)
+        expectEqual(try decode(Look.self, #"{"character":"dragon","theme":"mint"}"#), Look(theme: .mint, mascot: .claude))
+    },
+
     test("settings out of range are put back in range") {
         var preferences = Preferences()
         preferences.intervalHours = 999

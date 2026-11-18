@@ -40,11 +40,12 @@ public enum Painter {
     /// A mascot around `point`, facing right, with whatever it is holding.
     public static func mascot(_ mascot: Mascot, pose: Pose, at point: CGPoint,
                               theme: Theme = .blue, in context: CGContext) {
-        let centre = point.snapped(to: Sprite.scale)
+        // The bob lifts the sprite and whatever it holds together.
+        let centre = point.snapped(to: Sprite.scale).applying(.init(translationX: 0, y: Sprite.bob(mascot, pose: pose)))
         let half = Double(Sprite.side) * Sprite.scale / 2
         context.saveGState()
         context.setShouldAntialias(false)
-        context.translateBy(x: centre.x - half, y: centre.y - half + Sprite.bob(mascot, pose: pose))
+        context.translateBy(x: centre.x - half, y: centre.y - half)
         context.scaleBy(x: Sprite.scale, y: Sprite.scale)
         blocks(Sprite.mascot(mascot, pose: pose), theme: theme, in: context)
         context.restoreGState()
@@ -198,14 +199,14 @@ public enum Painter {
         fill(frame.minX + 4, frame.minY + 4, frame.width - 8, frame.height - 8, Palette.cream, in: context)
 
         let icon = CGPoint(x: frame.minX + 43, y: frame.minY + 48)
-        switch look.mascot {
-        case .claude:
+        if look.mascot == .claude {
             bottle(at: icon, scale: 1.35, theme: look.theme, in: context)
-        case .droplet:
+        } else {
             context.saveGState()
             context.translateBy(x: icon.x, y: icon.y)
             context.scaleBy(x: 0.5, y: 0.5)
-            mascot(.droplet, pose: Pose(phase: .asking, time: 0), at: .zero, theme: look.theme, in: context)
+            mascot(look.mascot, pose: Pose(phase: .asking, time: 0, usesRope: false), at: .zero, theme: look.theme,
+                   in: context)
             context.restoreGState()
         }
 
@@ -302,6 +303,17 @@ public enum Painter {
         let image = NSImage(size: size)
         image.addRepresentation(bitmap)
         return image
+    }
+
+    /// A mascot standing still, for the picker in the settings.
+    public static func portrait(_ mascot: Mascot, theme: Theme, size: Double = 48) -> NSImage {
+        image(size: CGSize(width: size, height: size)) { context in
+            // 3 of 8: each art pixel is 1.5 points, a whole 3 pixels on a Retina display.
+            let scale = size / 128
+            context.scaleBy(x: scale, y: scale)
+            Painter.mascot(mascot, pose: Pose(phase: .asking, time: 0, usesRope: false), at: CGPoint(x: 64, y: 64),
+                           theme: theme, in: context)
+        }
     }
 
     public static func menuIcon() -> NSImage {

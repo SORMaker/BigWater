@@ -13,6 +13,10 @@ public enum Palette {
     public static let rope = NSColor(srgbRed: 0.48, green: 0.37, blue: 0.27, alpha: 1)
     public static let ropeLight = NSColor(srgbRed: 0.79, green: 0.65, blue: 0.46, alpha: 1)
     public static let labelShade = NSColor(srgbRed: 0.82, green: 0.87, blue: 0.86, alpha: 1)
+    public static let leaf = NSColor(srgbRed: 0.36, green: 0.62, blue: 0.33, alpha: 1)
+    public static let leafLight = NSColor(srgbRed: 0.56, green: 0.79, blue: 0.43, alpha: 1)
+    public static let leafDark = NSColor(srgbRed: 0.19, green: 0.40, blue: 0.22, alpha: 1)
+    public static let gold = NSColor(srgbRed: 0.98, green: 0.79, blue: 0.29, alpha: 1)
 
     public struct Accent {
         public let base: NSColor
@@ -51,6 +55,10 @@ public enum Palette {
         case .rope: return rope
         case .ropeLight: return ropeLight
         case .labelShade: return labelShade
+        case .leaf: return leaf
+        case .leafLight: return leafLight
+        case .leafDark: return leafDark
+        case .gold: return gold
         }
     }
 }

@@ -7,6 +7,7 @@ public enum Ink: Sendable {
     case cream, ink, clay, clayLight, clayShadow
     case accent, accentLight, accentDark
     case glint, rope, ropeLight, labelShade
+    case leaf, leafLight, leafDark, gold
 }
 
 /// One filled rectangle of pixel art.
@@ -64,31 +65,54 @@ public enum Sprite {
     public static func mascot(_ mascot: Mascot, pose: Pose) -> [Block] {
         switch mascot {
         case .claude: return claude(pose)
+        case .wizard: return claude(pose, asWizard: true)
         case .droplet: return droplet(pose)
+        case .cactus: return cactus(pose)
+        case .whale: return whale(pose)
         }
     }
 
-    /// The droplet hops in place while it asks. Points, downwards.
+    /// The droplet hops and the whale bobs while they ask. Points, downwards.
     public static func bob(_ mascot: Mascot, pose: Pose) -> Double {
-        mascot == .droplet && pose.phase == .asking ? sin(pose.time * 2.8).rounded() * scale : 0
+        guard pose.phase == .asking else { return 0 }
+        switch mascot {
+        case .droplet: return sin(pose.time * 2.8).rounded() * scale
+        case .whale: return sin(pose.time * 2.2).rounded() * scale
+        case .claude, .wizard, .cactus: return 0
+        }
     }
+
+    /// Where the wizard's orb is, in points from the mascot's centre. Its
+    /// bottles appear here.
+    public static let orb = CGPoint(x: 48, y: -48)
 
     public static func props(_ mascot: Mascot, pose: Pose) -> [Prop] {
-        let hand: Ink
         switch mascot {
-        case .claude: hand = pose.isHovered ? .clayLight : .clay
-        case .droplet: hand = pose.isHovered ? .accentLight : .accent
+        case .claude: return claudeProps(pose)
+        case .wizard: return wizardProps(pose)
+        case .droplet: return held(pose, hand: pose.isHovered ? .accentLight : .accent, reach: 8)
+        case .whale: return pose.phase == .drinking ? held(pose, hand: pose.isHovered ? .accentLight : .accent, reach: 8)
+                                                    : spout(pose)
+        case .cactus: return pose.phase == .drinking ? held(pose, hand: nil, reach: -2, lift: -20) : []
         }
-        if pose.phase == .drinking {
-            // Held to the mouth, with the hand painted over the bottle.
-            let reach = mascot == .droplet ? 8.0 : 0
-            return pose.isSipping
-                ? [.bottle(at: CGPoint(x: reach + 50, y: -2), scale: 1.5, angle: -2 * .pi / 3),
-                   .block(Block(reach + 44, -4, 16, 12, hand))]
-                : [.bottle(at: CGPoint(x: reach + 56, y: 8), scale: 1.5, angle: -5 * .pi / 12),
-                   .block(Block(reach + 48, 4, 16, 12, hand))]
-        }
-        guard mascot == .claude, pose.phase == .asking else { return [] }
+    }
+
+    /// A bottle held to the mouth while drinking, with the hand painted over
+    /// it. Without a hand it floats, or rests on an arm that is part of the
+    /// sprite.
+    private static func held(_ pose: Pose, hand: Ink?, reach: Double = 0, lift: Double = 0) -> [Prop] {
+        guard pose.phase == .drinking else { return [] }
+        let (bottle, grip) = pose.isSipping
+            ? (Prop.bottle(at: CGPoint(x: reach + 50, y: lift - 2), scale: 1.5, angle: -2 * .pi / 3),
+               Block(reach + 44, lift - 4, 16, 12, hand ?? .glint))
+            : (Prop.bottle(at: CGPoint(x: reach + 56, y: lift + 8), scale: 1.5, angle: -5 * .pi / 12),
+               Block(reach + 48, lift + 4, 16, 12, hand ?? .glint))
+        return hand == nil ? [bottle] : [bottle, .block(grip)]
+    }
+
+    private static func claudeProps(_ pose: Pose) -> [Prop] {
+        if pose.phase == .drinking { return held(pose, hand: pose.isHovered ? .clayLight : .clay) }
+        guard pose.phase == .asking else { return [] }
         let cycle = pose.throwCycle
         if pose.isWindingUp {
             let lift = min((cycle - 0.18) / 0.25, 1)
@@ -101,9 +125,64 @@ public enum Sprite {
         return []
     }
 
+    /// A four-pointed twinkle of 4-point pixels around `centre`.
+    private static func twinkle(_ centre: CGPoint, ink: Ink = .glint, large: Bool = true) -> [Prop] {
+        var blocks = [Block(centre.x - 2, centre.y - 2, 4, 4, ink)]
+        if large {
+            blocks += [Block(centre.x - 2, centre.y - 8, 4, 4, ink), Block(centre.x - 2, centre.y + 4, 4, 4, ink),
+                       Block(centre.x - 8, centre.y - 2, 4, 4, ink), Block(centre.x + 4, centre.y - 2, 4, 4, ink)]
+        }
+        return blocks.map { .block($0) }
+    }
+
+    private static func wizardProps(_ pose: Pose) -> [Prop] {
+        let orb = Self.orb
+        switch pose.phase {
+        case .asking:
+            let cycle = pose.throwCycle
+            if pose.isWindingUp {
+                // The orb gathers light before each bottle appears.
+                let step = Int((cycle - 0.18) / 0.1)
+                let around = [CGPoint(x: orb.x - 14, y: orb.y - 10), CGPoint(x: orb.x + 14, y: orb.y - 6),
+                              CGPoint(x: orb.x + 6, y: orb.y - 18), CGPoint(x: orb.x - 10, y: orb.y + 10)]
+                return around.prefix(min(step + 1, around.count)).flatMap { twinkle($0, ink: .gold, large: false) }
+            }
+            if cycle >= ReminderScene.releaseTime && cycle < 0.72 {
+                return twinkle(CGPoint(x: orb.x + 16, y: orb.y - 2))
+                    + (0..<3).map { .block(Block(orb.x + 22 + Double($0) * 9, orb.y + 2 + Double($0) * 6, 6, 3, .accentLight)) }
+            }
+            return []
+        case .drinking:
+            // No free hand: the bottle floats to the mouth.
+            let shine = Int(pose.time * 3) % 2 == 0
+            return held(pose, hand: nil)
+                + twinkle(shine ? CGPoint(x: 70, y: -22) : CGPoint(x: 34, y: 22), ink: .gold, large: false)
+                + twinkle(shine ? CGPoint(x: 30, y: -30) : CGPoint(x: 72, y: 14), ink: .glint, large: false)
+        case .cheering:
+            return twinkle(CGPoint(x: orb.x - 12, y: orb.y - 6), ink: .gold) + twinkle(CGPoint(x: orb.x + 12, y: orb.y + 10))
+        case .entering, .leaving, .gone:
+            return []
+        }
+    }
+
+    /// The whale's fountain rises and falls once a throw period.
+    private static func spout(_ pose: Pose) -> [Prop] {
+        guard pose.phase == .asking else { return [] }
+        let cycle = pose.throwCycle
+        guard cycle >= 0.15, cycle < 1.05 else { return [] }
+        let height = (sin((cycle - 0.15) / 0.9 * .pi) * 11).rounded() * 4
+        guard height > 0 else { return [] }
+        // The blowhole is at sprite pixel (15, 11).
+        let top = -16 - height
+        return [Block(-4, top, 8, height, .accentLight), Block(-2, top, 4, height, .glint),
+                Block(-12, top - 4, 4, 4, .accentLight), Block(8, top - 4, 4, 4, .accentLight),
+                Block(-8, top - 8, 4, 4, .glint), Block(4, top - 8, 4, 4, .glint),
+                Block(-16, top + 4, 4, 4, .accentLight), Block(12, top + 4, 4, 4, .accentLight)].map { .block($0) }
+    }
+
     // MARK: Claude
 
-    private static func claude(_ pose: Pose) -> [Block] {
+    private static func claude(_ pose: Pose, asWizard: Bool = false) -> [Block] {
         var blocks: [Block] = []
         func paint(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ ink: Ink) {
             blocks.append(Block(x, y, width, height, ink))
@@ -159,6 +238,7 @@ public enum Sprite {
         if happy { paint(15, 20, 3, 1, .ink) }
 
         // The far arm: wind-up, release, holding a bottle, waving, or at rest.
+        if asWizard { return blocks + wizardHatAndStaff(pose, clay: clay) }
         if pose.isWindingUp {
             paint(24, 12, 2, 7, clay)
             paint(24, 10, 4, 3, clay)
@@ -188,6 +268,120 @@ public enum Sprite {
         paint(9, 11, 19, 1, .accent)
         paint(18, 8, 1, 1, .glint)
         paint(17, 9, 3, 2, .glint)
+        return blocks
+    }
+
+    /// The wizard's costume: a staff in the far hand instead of a free arm,
+    /// and a pointed hat instead of the cap.
+    private static func wizardHatAndStaff(_ pose: Pose, clay: Ink) -> [Block] {
+        let cycle = pose.throwCycle
+        let casting = pose.phase == .asking && cycle >= ReminderScene.releaseTime && cycle < 0.72
+        let flashing = pose.phase == .cheering && Int(pose.time * 12) % 2 == 0
+        let orb: Ink = casting || flashing ? .glint : (pose.isWindingUp ? .accentLight : .accent)
+        return [
+            // The staff, upright in the far hand, its orb level with the hat.
+            Block(27, 5, 2, 22, .rope), Block(27, 5, 1, 22, .ropeLight), Block(26, 5, 4, 1, .gold),
+            Block(27, 1, 2, 4, orb), Block(26, 2, 4, 2, orb), Block(27, 2, 1, 1, .glint),
+            Block(24, 16, 2, 2, clay), Block(25, 15, 4, 3, clay), Block(25, 15, 4, 1, .clayLight),
+            // A pointed hat, its tip bent back, with a gold band and a star.
+            Block(9, 0, 4, 1, .accentDark), Block(11, 1, 5, 2, .accentDark), Block(12, 3, 7, 2, .accentDark),
+            Block(11, 5, 10, 2, .accentDark), Block(10, 7, 13, 2, .accentDark), Block(9, 9, 15, 1, .accentDark),
+            Block(12, 3, 2, 2, .accent), Block(11, 5, 3, 2, .accent), Block(10, 7, 4, 2, .accent),
+            Block(9, 10, 15, 1, .gold),
+            Block(6, 11, 21, 2, .accentDark), Block(7, 11, 19, 1, .accent),
+            Block(17, 4, 1, 3, .gold), Block(16, 5, 3, 1, .gold), Block(20, 8, 1, 1, .gold)
+        ]
+    }
+
+    // MARK: Cactus
+
+    /// A cactus in a clay pot. It droops and frowns while it waits, and
+    /// perks up, flower open, once it gets its water.
+    private static func cactus(_ pose: Pose) -> [Block] {
+        let body: Ink = pose.isHovered ? .leafLight : .leaf
+        let thirsty = pose.phase == .asking
+        let happy = pose.phase == .drinking || pose.phase == .cheering || pose.phase == .leaving
+        // Waving arms when it is done.
+        let wave = pose.phase == .cheering && Int(pose.time * 12) % 2 == 0 ? 1.0 : 0
+        var blocks: [Block] = []
+        if thirsty {
+            // Arms hanging down.
+            blocks += [Block(21, 12, 4, 3, body), Block(23, 14, 3, 5, body), Block(25, 12, 1, 7, .leafDark),
+                       Block(23, 19, 3, 1, .leafDark), Block(21, 14, 2, 1, .leafDark),
+                       Block(7, 11, 4, 3, body), Block(6, 13, 3, 5, body), Block(6, 11, 1, 7, .leafDark),
+                       Block(6, 18, 3, 1, .leafDark), Block(9, 13, 2, 1, .leafDark)]
+        } else {
+            // Arms up.
+            blocks += [Block(21, 13, 4, 3, body), Block(23, 8 - wave, 3, 7 + wave, body),
+                       Block(25, 8 - wave, 1, 8 + wave, .leafDark), Block(23, 7 - wave, 3, 1, .leafDark),
+                       Block(21, 15, 3, 1, .leafDark),
+                       Block(7, 11, 4, 3, body), Block(6, 6 + wave, 3, 7 - wave, body),
+                       Block(6, 6 + wave, 1, 8 - wave, .leafDark), Block(6, 5 + wave, 3, 1, .leafDark),
+                       Block(8, 13, 3, 1, .leafDark)]
+        }
+        // The body: a rounded column with a light stripe and a few spines.
+        blocks += [Block(12, 3, 8, 1, .leafDark), Block(10, 4, 12, 16, .leafDark),
+                   Block(11, 5, 10, 14, body), Block(12, 4, 8, 1, body), Block(12, 5, 2, 12, .leafLight),
+                   Block(12, 8, 1, 1, .cream), Block(19, 7, 1, 1, .cream), Block(19, 16, 1, 1, .cream),
+                   Block(13, 17, 1, 1, .cream)]
+        // The face.
+        if happy && (pose.phase != .drinking || pose.isSipping) {
+            blocks += [Block(13, 12, 1, 1, .ink), Block(14, 11, 1, 1, .ink), Block(15, 12, 1, 1, .ink),
+                       Block(17, 12, 1, 1, .ink), Block(18, 11, 1, 1, .ink), Block(19, 12, 1, 1, .ink)]
+        } else {
+            blocks += [Block(14, 11, 1, 2, .ink), Block(18, 11, 1, 2, .ink)]
+        }
+        if thirsty {
+            blocks += [Block(15, 14, 2, 1, .ink), Block(14, 15, 1, 1, .ink), Block(17, 15, 1, 1, .ink)]
+        } else if happy {
+            blocks += [Block(14, 14, 1, 1, .ink), Block(17, 14, 1, 1, .ink), Block(15, 15, 2, 1, .ink)]
+        } else {
+            blocks += [Block(15, 15, 2, 1, .ink)]
+        }
+        blocks += [Block(12, 13, 1, 1, .clayLight), Block(20, 13, 1, 1, .clayLight)]
+        // The flower: a drooping bud while thirsty, open when happy.
+        if happy {
+            blocks += [Block(14, 1, 4, 2, .clayLight), Block(15, 0, 2, 4, .clayLight), Block(15, 1, 2, 2, .gold)]
+        } else if thirsty {
+            blocks += [Block(17, 2, 2, 1, .clayShadow), Block(16, 3, 2, 1, .clayShadow)]
+        } else {
+            blocks += [Block(15, 1, 2, 2, .clayLight)]
+        }
+        // The pot, over the bottom of the body.
+        blocks += [Block(9, 22, 14, 5, .clay), Block(19, 22, 4, 5, .clayShadow), Block(10, 27, 12, 1, .clayShadow),
+                   Block(7, 19, 18, 3, .clay), Block(7, 19, 18, 1, .clayLight), Block(7, 21, 18, 1, .clayShadow)]
+        return blocks
+    }
+
+    // MARK: Whale
+
+    /// A round little whale with its tail up.
+    private static func whale(_ pose: Pose) -> [Block] {
+        let body: Ink = pose.isHovered ? .accentLight : .accent
+        let happy = pose.phase == .cheering || pose.phase == .leaving || pose.isSipping
+        var blocks = [
+            // The tail, flukes raised behind it.
+            Block(0, 8, 3, 2, .accentDark), Block(4, 8, 3, 2, .accentDark), Block(1, 10, 5, 1, .accentDark),
+            Block(2, 11, 4, 2, .accentDark), Block(3, 13, 4, 5, .accentDark),
+            Block(1, 9, 1, 1, body), Block(5, 9, 1, 1, body), Block(2, 10, 3, 1, body), Block(3, 11, 2, 2, body),
+            Block(4, 13, 2, 4, body),
+            // The body, outline then fill.
+            Block(9, 12, 14, 1, .accentDark), Block(7, 13, 18, 1, .accentDark), Block(6, 14, 21, 1, .accentDark),
+            Block(5, 15, 23, 8, .accentDark), Block(6, 23, 21, 1, .accentDark), Block(7, 24, 19, 1, .accentDark),
+            Block(9, 25, 15, 1, .accentDark),
+            Block(9, 13, 14, 1, body), Block(7, 14, 19, 1, body), Block(6, 15, 21, 8, body),
+            Block(7, 23, 19, 1, body), Block(9, 24, 15, 1, body),
+            Block(10, 14, 6, 1, .accentLight), Block(7, 15, 2, 4, .accentLight),
+            // A pale belly and a flipper.
+            Block(12, 21, 14, 1, .cream), Block(10, 22, 16, 1, .cream), Block(10, 23, 15, 1, .cream),
+            Block(12, 24, 10, 1, .cream),
+            Block(12, 20, 5, 2, .accentDark), Block(13, 22, 3, 1, .accentDark),
+            // The blowhole.
+            Block(15, 12, 2, 1, .ink),
+            // A blush and a smile.
+            Block(19, 19, 2, 1, .clayLight), Block(22, 19, 3, 1, .ink), Block(25, 18, 1, 1, .ink)
+        ]
+        blocks += happy ? [Block(20, 17, 3, 1, .ink)] : [Block(21, 16, 2, 2, .ink), Block(21, 16, 1, 1, .cream)]
         return blocks
     }
 
