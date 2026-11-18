@@ -292,12 +292,15 @@ public struct ReminderScene: Equatable, Sendable {
             bottles[index].position.y += bottles[index].velocity.dy * dt
             bottles[index].angle += bottles[index].spin * dt
         }
-        let ground = self.ground
-        for bottle in bottles where bottle.position.y > ground {
-            splash(at: CGPoint(x: min(max(bottle.position.x, screen.visible.minX + 20), screen.visible.maxX - 20),
-                               y: ground + 7))
+        // A bottle bursts wherever it meets an edge of the usable screen.
+        let walls = self.walls
+        for bottle in bottles {
+            guard let normal = Self.edgeNormal(of: bottle.position, inside: walls) else { continue }
+            let point = CGPoint(x: min(max(bottle.position.x, walls.minX), walls.maxX),
+                                y: min(max(bottle.position.y, walls.minY), walls.maxY))
+            splash(at: CGPoint(x: point.x - normal.dx * 7, y: point.y - normal.dy * 7), away: normal)
         }
-        bottles.removeAll { $0.position.y > ground || $0.age > 5 }
+        bottles.removeAll { Self.edgeNormal(of: $0.position, inside: walls) != nil || $0.age > 5 }
 
         for index in splashes.indices {
             splashes[index].age += dt
@@ -310,8 +313,18 @@ public struct ReminderScene: Equatable, Sendable {
 
     static let gravity = 690.0
 
-    /// Where a bottle bursts: the bottom of the usable screen.
-    private var ground: Double { min(screen.size.height, screen.visible.maxY) - 25 }
+    /// Where bottles burst: just inside every edge of the usable screen.
+    private var walls: CGRect { screen.visible.insetBy(dx: 25, dy: 25) }
+
+    /// Which way back into the screen from an edge `point` has crossed, or
+    /// nil while it is still inside.
+    static func edgeNormal(of point: CGPoint, inside walls: CGRect) -> CGVector? {
+        if point.y > walls.maxY { return CGVector(dx: 0, dy: -1) }
+        if point.y < walls.minY { return CGVector(dx: 0, dy: 1) }
+        if point.x > walls.maxX { return CGVector(dx: -1, dy: 0) }
+        if point.x < walls.minX { return CGVector(dx: 1, dy: 0) }
+        return nil
+    }
 
     private mutating func throwBottle() {
         guard look.mascot.throwsBottles else { return }
@@ -321,27 +334,41 @@ public struct ReminderScene: Equatable, Sendable {
         let hand = look.mascot == .wizard ? CGPoint(x: Sprite.orb.x + 8, y: Sprite.orb.y) : CGPoint(x: 54, y: 12)
         let start = CGPoint(x: from.x + direction * hand.x, y: from.y + hand.y)
 
-        // Each throw picks a spot anywhere from just in front of the mascot to
-        // the far side of the screen, and a flat toss or a high lob to get there.
-        let nearest = start.x + direction * 30
-        let farthest = facesLeft ? screen.visible.minX + 30 : screen.visible.maxX - 30
-        let landing = nearest + (farthest - nearest) * dice.next()
-        let rise = -(90 + 260 * dice.next())
-        let drop = max(0, ground - start.y)
-        let flight = (-rise + (rise * rise + 2 * Self.gravity * drop).squareRoot()) / Self.gravity
+        // Each throw aims at a random point on an edge in front of the mascot:
+        // the floor, the far wall or the ceiling. Never the wall behind it.
+        let walls = self.walls
+        let farWall = facesLeft ? walls.minX : walls.maxX
+        let ahead = start.x + direction * 30
+        let along = (farWall - ahead) * direction > 0 ? ahead + (farWall - ahead) * dice.next() : farWall
+        let edge = dice.next()
+        let target: CGPoint
+        if edge < 0.45 {
+            target = CGPoint(x: along, y: walls.maxY)
+        } else if edge < 0.8 {
+            target = CGPoint(x: farWall, y: walls.minY + walls.height * dice.next())
+        } else {
+            target = CGPoint(x: along, y: walls.minY)
+        }
+        // A quick throw flies flat; a slow one arcs high to get there.
+        let distance = (pow(target.x - start.x, 2) + pow(target.y - start.y, 2)).squareRoot()
+        let flight = min(max(distance / (420 + 580 * dice.next()), 0.45), 1.8)
+        let velocity = CGVector(dx: (target.x - start.x) / flight,
+                                dy: (target.y - start.y - Self.gravity * flight * flight / 2) / flight)
         let spin = (1.5 + 1.8 * dice.next()) * (dice.next() < 0.5 ? -1 : 1)
-        bottles.append(FlyingBottle(position: start,
-                                    velocity: CGVector(dx: (landing - start.x) / flight, dy: rise),
+        bottles.append(FlyingBottle(position: start, velocity: velocity,
                                     angle: direction * -0.4, spin: direction * spin))
         throwCount += 1
     }
 
-    private mutating func splash(at point: CGPoint) {
+    /// Nine drops fanned out from the edge, back into the screen.
+    private mutating func splash(at point: CGPoint, away normal: CGVector) {
+        let facing = atan2(normal.dy, normal.dx)
         for index in 0..<9 {
-            let angle = .pi + Double(index) / 8 * .pi
+            let angle = facing - .pi / 2 + Double(index) / 8 * .pi
             let speed = 90 + Double(index % 3) * 55
             splashes.append(Splash(position: point,
-                                   velocity: CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed - 70),
+                                   velocity: CGVector(dx: cos(angle) * speed + normal.dx * 70,
+                                                      dy: sin(angle) * speed + normal.dy * 70),
                                    lifetime: 0.38 + Double(index % 3) * 0.08,
                                    size: Double(3 + index % 3) * 2))
         }

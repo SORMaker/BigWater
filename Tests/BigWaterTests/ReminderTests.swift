@@ -105,12 +105,14 @@ let reminderSuite = Suite(name: "reminder", tests: [
             _ = run(&reminder, for: arrival + 6)
             counts[mascot] = reminder.scene.throwCount
             if mascot == .wizard {
-                // Just released: the newest bottle is still by the orb, above the mascot.
+                // On the frame it appears, the bottle is at the orb, above the mascot.
                 var fresh = animated(.wizard)
-                _ = run(&fresh, for: arrival + ReminderScene.releaseTime + 0.05)
+                _ = run(&fresh, for: arrival)
+                while fresh.scene.throwCount == 0 { _ = fresh.advance(by: 1.0 / 60) }
                 let bottle = fresh.scene.bottles.last?.position ?? .zero
                 let centre = fresh.scene.mascotPosition
-                expect(bottle.y < centre.y - 30, "appears high, at the orb, not at a hand: \(bottle) vs \(centre)")
+                expect(bottle.y < centre.y - 30 && abs(bottle.x - centre.x - Sprite.orb.x) < 40,
+                       "appears at the orb, not at a hand: \(bottle) vs \(centre)")
             }
         }
         expectEqual(counts, [.claude: 5, .wizard: 5, .droplet: 0, .cactus: 0, .whale: 0])
@@ -131,32 +133,41 @@ let reminderSuite = Suite(name: "reminder", tests: [
         }
     },
 
-    test("bottles land all over the inward side of the screen, not in a few spots") {
+    test("bottles hit the floor, the far wall and the ceiling all over, never behind") {
         for (edge, position) in [(Edge.top, 0.2), (.top, 0.85), (.left, 0.5), (.right, 0.3), (.bottom, 0.5)] {
             var reminder = Reminder(style: .animated, look: Look(), screen: desktop,
                                     entrance: Entrance(edge: edge, position: position), seed: 2026)
-            var landings: [Double] = []
-            for _ in 0..<(30 * 70) {
+            var hits: [CGPoint] = []
+            for _ in 0..<(30 * 90) {
                 _ = reminder.advance(by: 1.0 / 30)
-                // A landing leaves nine drops at once; drops from earlier frames are older.
+                // A burst leaves nine drops at once; drops from earlier frames are older.
                 let fresh = reminder.scene.splashes.filter { $0.age <= 1.0 / 30 + 0.001 }
-                landings += stride(from: 0, to: fresh.count, by: 9).map { fresh[$0].position.x }
+                hits += stride(from: 0, to: fresh.count, by: 9).map { fresh[$0].position }
             }
-            let scene = reminder.scene
             let visible = desktop.visible
-            let from = scene.restingPoint.x + (scene.facesLeft ? -84 : 84)
-            let to = scene.facesLeft ? visible.minX + 30 : visible.maxX - 30
-            let span = abs(to - from)
-            let where_ = "\(edge) at \(position)"
-            expect(landings.count >= 45, "\(where_): \(landings.count) landings")
-            expect(landings.allSatisfy { visible.minX...visible.maxX ~= $0 }, "\(where_): inside the screen")
-            expect(landings.allSatisfy { scene.facesLeft ? $0 <= from + 30 : $0 >= from - 30 },
-                   "\(where_): thrown forwards, never behind")
-            let reached = (landings.max() ?? 0) - (landings.min() ?? 0)
-            expect(reached >= span * 0.8, "\(where_): covers \(Int(reached)) of \(Int(span)) points")
-            // Split the stretch into ten and expect bottles in nearly every part.
-            let parts = Set(landings.map { min(9, max(0, Int(abs($0 - from) / span * 10))) })
-            expect(parts.count >= 8, "\(where_): lands in \(parts.count) of 10 parts")
+            let facesLeft = reminder.scene.facesLeft
+            // Which edge each burst was on: the nearest one.
+            func side(_ point: CGPoint) -> String {
+                let gaps = ["floor": visible.maxY - point.y, "ceiling": point.y - visible.minY,
+                            "left": point.x - visible.minX, "right": visible.maxX - point.x]
+                return gaps.min { $0.value < $1.value }!.key
+            }
+            let sides = Dictionary(grouping: hits, by: side)
+            let farWall = facesLeft ? "left" : "right", behind = facesLeft ? "right" : "left"
+            let where_ = "\(edge) at \(position): \(sides.mapValues(\.count))"
+            expect(hits.count >= 55, where_)
+            expect(hits.allSatisfy { visible.contains($0) }, "\(where_): inside the screen")
+            expect((sides[behind] ?? []).isEmpty, "\(where_): nothing hits the wall behind")
+            expect((sides["floor"]?.count ?? 0) >= 12, "\(where_): the floor")
+            expect((sides[farWall]?.count ?? 0) >= 8, "\(where_): the far wall")
+            expect((sides["ceiling"]?.count ?? 0) >= 4, "\(where_): the ceiling")
+            // Spread along the floor and up the far wall, not bunched.
+            let floor = (sides["floor"] ?? []).map(\.x)
+            let ahead = reminder.scene.restingPoint.x + (facesLeft ? -84 : 84)
+            let floorSpan = abs((facesLeft ? visible.minX : visible.maxX) - ahead)
+            expect((floor.max() ?? 0) - (floor.min() ?? 0) >= floorSpan * 0.7, "\(where_): along the floor")
+            let wall = (sides[farWall] ?? []).map(\.y)
+            expect((wall.max() ?? 0) - (wall.min() ?? 0) >= visible.height * 0.5, "\(where_): up the wall")
         }
     },
 
@@ -164,8 +175,12 @@ let reminderSuite = Suite(name: "reminder", tests: [
         func bottles(_ seed: UInt64) -> [CGPoint] {
             var reminder = Reminder(style: .animated, look: Look(), screen: desktop,
                                     entrance: Entrance(edge: .top, position: 0.3), seed: seed)
-            for _ in 0..<150 { _ = reminder.advance(by: 1.0 / 30) }
-            return reminder.scene.bottles.map(\.position)
+            var path: [CGPoint] = []
+            for _ in 0..<150 {
+                _ = reminder.advance(by: 1.0 / 30)
+                path += reminder.scene.bottles.map(\.position)
+            }
+            return path
         }
         expect(!bottles(1).isEmpty)
         expectEqual(bottles(1), bottles(1))
