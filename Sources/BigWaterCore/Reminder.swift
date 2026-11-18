@@ -31,11 +31,11 @@ public struct Reminder: Equatable, Sendable {
 
     public init(style: ReminderStyle, look: Look, corner: Corner = .random, screen: ScreenSpace,
                 isPreview: Bool = false, entrance: Entrance = .random(),
-                drinkTime: Double = ReminderScene.standardDrinkTime) {
+                drinkTime: Double = ReminderScene.standardDrinkTime, seed: UInt64 = .random(in: .min ... .max)) {
         self.style = style
         self.corner = corner
         scene = ReminderScene(screen: screen, look: look, entrance: Entrance(corner: corner, otherwise: entrance),
-                              isPreview: isPreview, drinkTime: drinkTime)
+                              isPreview: isPreview, drinkTime: drinkTime, seed: seed)
         // A card has no entrance to wait for.
         if style == .compact { scene.advance(by: ReminderScene.entranceTime + 0.1) }
     }

@@ -177,8 +177,9 @@ do {
     try savePNG(Painter.panelBottle(), to: output.appendingPathComponent("bottle.png"))
     try savePNG(lineup(), to: output.appendingPathComponent("mascots.png"))
 
+    // Fixed seeds, so the pictures only change when the motion does.
     var hero = ReminderScene(screen: ScreenSpace(size: CGSize(width: 960, height: 640), topInset: 0),
-                             drinkTime: shortDrink)
+                             drinkTime: shortDrink, seed: 7)
     try saveGIF(frames: frameCount, to: output.appendingPathComponent("animation.gif")) { frame in
         if frame == clickFrame { hero.beginDrinking() }
         defer { hero.advance(by: 1.0 / 12) }
@@ -187,7 +188,7 @@ do {
 
     var entrances = Edge.allCases.map {
         ReminderScene(screen: ScreenSpace(size: CGSize(width: 640, height: 420), topInset: 44),
-                      entrance: Entrance(edge: $0, position: 0.5), drinkTime: shortDrink)
+                      entrance: Entrance(edge: $0, position: 0.5), drinkTime: shortDrink, seed: 11)
     }
     try saveGIF(frames: frameCount, to: output.appendingPathComponent("entrances.gif")) { frame in
         if frame == clickFrame { for index in entrances.indices { entrances[index].beginDrinking() } }

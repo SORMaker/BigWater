@@ -131,6 +131,47 @@ let reminderSuite = Suite(name: "reminder", tests: [
         }
     },
 
+    test("bottles land all over the inward side of the screen, not in a few spots") {
+        for (edge, position) in [(Edge.top, 0.2), (.top, 0.85), (.left, 0.5), (.right, 0.3), (.bottom, 0.5)] {
+            var reminder = Reminder(style: .animated, look: Look(), screen: desktop,
+                                    entrance: Entrance(edge: edge, position: position), seed: 2026)
+            var landings: [Double] = []
+            for _ in 0..<(30 * 70) {
+                _ = reminder.advance(by: 1.0 / 30)
+                // A landing leaves nine drops at once; drops from earlier frames are older.
+                let fresh = reminder.scene.splashes.filter { $0.age <= 1.0 / 30 + 0.001 }
+                landings += stride(from: 0, to: fresh.count, by: 9).map { fresh[$0].position.x }
+            }
+            let scene = reminder.scene
+            let visible = desktop.visible
+            let from = scene.restingPoint.x + (scene.facesLeft ? -84 : 84)
+            let to = scene.facesLeft ? visible.minX + 30 : visible.maxX - 30
+            let span = abs(to - from)
+            let where_ = "\(edge) at \(position)"
+            expect(landings.count >= 45, "\(where_): \(landings.count) landings")
+            expect(landings.allSatisfy { visible.minX...visible.maxX ~= $0 }, "\(where_): inside the screen")
+            expect(landings.allSatisfy { scene.facesLeft ? $0 <= from + 30 : $0 >= from - 30 },
+                   "\(where_): thrown forwards, never behind")
+            let reached = (landings.max() ?? 0) - (landings.min() ?? 0)
+            expect(reached >= span * 0.8, "\(where_): covers \(Int(reached)) of \(Int(span)) points")
+            // Split the stretch into ten and expect bottles in nearly every part.
+            let parts = Set(landings.map { min(9, max(0, Int(abs($0 - from) / span * 10))) })
+            expect(parts.count >= 8, "\(where_): lands in \(parts.count) of 10 parts")
+        }
+    },
+
+    test("the same seed throws the same way; another seed does not") {
+        func bottles(_ seed: UInt64) -> [CGPoint] {
+            var reminder = Reminder(style: .animated, look: Look(), screen: desktop,
+                                    entrance: Entrance(edge: .top, position: 0.3), seed: seed)
+            for _ in 0..<150 { _ = reminder.advance(by: 1.0 / 30) }
+            return reminder.scene.bottles.map(\.position)
+        }
+        expect(!bottles(1).isEmpty)
+        expectEqual(bottles(1), bottles(1))
+        expect(bottles(1) != bottles(2))
+    },
+
     test("a slow frame does not skip a throw") {
         var smooth = animated()
         var choppy = animated()

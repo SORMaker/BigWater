@@ -112,11 +112,16 @@ public struct ReminderScene: Equatable, Sendable {
     public var isHovered = false
     /// Where the mascot stood when it turned to leave.
     private var exitStart = CGPoint.zero
+    /// Where each throw lands. Seeded, so a given reminder always throws the
+    /// same way, which keeps the documentation animations stable.
+    private var dice: Dice
     /// A click during the entrance starts the drink on arrival.
     public private(set) var willDrinkOnArrival = false
 
     public init(screen: ScreenSpace, look: Look = .init(), entrance: Entrance = .init(),
-                isPreview: Bool = false, drinkTime: Double = standardDrinkTime) {
+                isPreview: Bool = false, drinkTime: Double = standardDrinkTime,
+                seed: UInt64 = .random(in: .min ... .max)) {
+        dice = Dice(seed: seed)
         self.screen = screen
         self.look = look
         self.entrance = entrance
@@ -282,18 +287,17 @@ public struct ReminderScene: Equatable, Sendable {
 
         for index in bottles.indices {
             bottles[index].age += dt
-            bottles[index].velocity.dy += 690 * dt
+            bottles[index].velocity.dy += Self.gravity * dt
             bottles[index].position.x += bottles[index].velocity.dx * dt
             bottles[index].position.y += bottles[index].velocity.dy * dt
             bottles[index].angle += bottles[index].spin * dt
         }
-        // A bottle bursts on the bottom of the usable screen.
-        let ground = min(screen.size.height, screen.visible.maxY)
-        for bottle in bottles where bottle.position.y > ground - 25 {
+        let ground = self.ground
+        for bottle in bottles where bottle.position.y > ground {
             splash(at: CGPoint(x: min(max(bottle.position.x, screen.visible.minX + 20), screen.visible.maxX - 20),
-                               y: ground - 18))
+                               y: ground + 7))
         }
-        bottles.removeAll { $0.position.y > ground - 25 || $0.age > 5 }
+        bottles.removeAll { $0.position.y > ground || $0.age > 5 }
 
         for index in splashes.indices {
             splashes[index].age += dt
@@ -304,21 +308,30 @@ public struct ReminderScene: Equatable, Sendable {
         splashes.removeAll { $0.age > $0.lifetime }
     }
 
+    static let gravity = 690.0
+
+    /// Where a bottle bursts: the bottom of the usable screen.
+    private var ground: Double { min(screen.size.height, screen.visible.maxY) - 25 }
+
     private mutating func throwBottle() {
         guard look.mascot.throwsBottles else { return }
-        // Four throws of different strength and spin, in rotation.
-        let variation = throwCount % 4
-        let speed = [245.0, 90.0, 145.0, 155.0][variation]
-        let spin = [-2.8, 2.1, -1.6, 2.9][variation]
         let from = mascotPosition
         let direction = facesLeft ? -1.0 : 1.0
-        // Claude throws from the hand; the wizard's bottles appear at the orb
-        // of the staff, already high, so they are sent off more gently.
-        let wizard = look.mascot == .wizard
-        let start = wizard ? CGPoint(x: Sprite.orb.x + 8, y: Sprite.orb.y) : CGPoint(x: 54, y: 12)
-        bottles.append(FlyingBottle(position: CGPoint(x: from.x + direction * start.x, y: from.y + start.y),
-                                    velocity: CGVector(dx: direction * speed,
-                                                       dy: (wizard ? -40 : -130) - Double(variation) * 12),
+        // Claude throws from the hand; the wizard's bottles appear at the orb.
+        let hand = look.mascot == .wizard ? CGPoint(x: Sprite.orb.x + 8, y: Sprite.orb.y) : CGPoint(x: 54, y: 12)
+        let start = CGPoint(x: from.x + direction * hand.x, y: from.y + hand.y)
+
+        // Each throw picks a spot anywhere from just in front of the mascot to
+        // the far side of the screen, and a flat toss or a high lob to get there.
+        let nearest = start.x + direction * 30
+        let farthest = facesLeft ? screen.visible.minX + 30 : screen.visible.maxX - 30
+        let landing = nearest + (farthest - nearest) * dice.next()
+        let rise = -(90 + 260 * dice.next())
+        let drop = max(0, ground - start.y)
+        let flight = (-rise + (rise * rise + 2 * Self.gravity * drop).squareRoot()) / Self.gravity
+        let spin = (1.5 + 1.8 * dice.next()) * (dice.next() < 0.5 ? -1 : 1)
+        bottles.append(FlyingBottle(position: start,
+                                    velocity: CGVector(dx: (landing - start.x) / flight, dy: rise),
                                     angle: direction * -0.4, spin: direction * spin))
         throwCount += 1
     }
@@ -347,5 +360,22 @@ extension CGRect {
     func clipped(to bounds: CGRect) -> CGRect? {
         let result = intersection(bounds)
         return result.isNull || result.isEmpty ? nil : result
+    }
+}
+
+/// A small seeded random source (SplitMix64): the same seed gives the same
+/// numbers, on every Mac and every run.
+struct Dice: Equatable, Sendable {
+    private var state: UInt64
+
+    init(seed: UInt64) { state = seed }
+
+    /// From 0 up to, not including, 1.
+    mutating func next() -> Double {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return Double((z ^ (z >> 31)) >> 11) / Double(1 << 53)
     }
 }

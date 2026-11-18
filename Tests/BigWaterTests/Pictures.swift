@@ -63,6 +63,29 @@ enum Pictures {
             _ = reminder.advance(by: ReminderScene.entranceTime + 3.4)
             try savePNG(picture(of: reminder), "mascot-\(mascot.rawValue).png", to: directory)
         }
+        // Where 25 seconds of bottles fly and land, as dotted paths.
+        for (name, entrance) in [("throws-top", Entrance(edge: .top, position: 0.25)),
+                                 ("throws-right", Entrance(edge: .right, position: 0.4))] {
+            let screen = ScreenSpace(size: CGSize(width: 1_440, height: 900), topInset: 25)
+            var reminder = Reminder(style: .animated, look: Look(), screen: screen, entrance: entrance, seed: 7)
+            let accent = Palette.accent(.blue)
+            let image = Painter.image(size: screen.size, scale: 1) { context in
+                Painter.fill(CGRect(origin: .zero, size: screen.size), NSColor(white: 0.9, alpha: 1), in: context)
+                for _ in 0..<(30 * 25) {
+                    _ = reminder.advance(by: 1.0 / 30)
+                    for bottle in reminder.scene.bottles {
+                        Painter.fill(CGRect(x: bottle.position.x - 2, y: bottle.position.y - 2, width: 4, height: 4),
+                                     accent.base, in: context)
+                    }
+                    for drop in reminder.scene.splashes where drop.age <= 1.0 / 30 + 0.001 {
+                        Painter.fill(CGRect(x: drop.position.x - 6, y: drop.position.y - 6, width: 12, height: 12),
+                                     accent.dark, in: context)
+                    }
+                }
+                Painter.scene(reminder.scene, in: context)
+            }
+            try savePNG(image, "\(name).png", to: directory)
+        }
         print("Pictures: \(directory.path)")
     }
 
