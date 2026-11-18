@@ -1,99 +1,135 @@
-import Foundation
 import CoreGraphics
+import Foundation
 
-public enum ReminderPhase: String {
-    case descending, reminding, drinking, acknowledging, ascending, finished
-}
-
-public enum ReminderEdge: String, CaseIterable {
+public enum Edge: String, CaseIterable, Sendable {
     case top, bottom, left, right
 }
 
-/// Picked once per reminder, so resizing or resuming never rerolls its path.
-public struct ReminderEntrance: Equatable {
-    public let edge: ReminderEdge
-    /// Position along the usable part of the edge, from left/top to right/bottom.
+/// Where the mascot comes in. Chosen once per reminder, so a resize or a
+/// resume never sends it along a different path.
+public struct Entrance: Equatable, Sendable {
+    public let edge: Edge
+    /// Along the usable part of the edge: 0 is left or top, 1 is right or bottom.
     public let position: Double
 
-    public init(edge: ReminderEdge = .top, position: Double = 0.72) {
+    public init(edge: Edge = .top, position: Double = 0.72) {
         self.edge = edge
         self.position = position.isFinite ? min(max(position, 0), 1) : 0.5
     }
 
-    public static func random() -> Self {
-        Self(edge: ReminderEdge.allCases.randomElement() ?? .top,
-             position: Double.random(in: 0...1))
+    public static func random() -> Entrance {
+        Entrance(edge: Edge.allCases.randomElement() ?? .top, position: .random(in: 0...1))
+    }
+
+    /// A fixed corner has its own entrance; `.random` keeps `fallback`.
+    public init(corner: Corner, otherwise fallback: Entrance) {
+        switch corner {
+        case .random: self = fallback
+        case .topLeft: self.init(edge: .top, position: 0)
+        case .topRight: self.init(edge: .top, position: 1)
+        case .bottomLeft: self.init(edge: .bottom, position: 0)
+        case .bottomRight: self.init(edge: .bottom, position: 1)
+        }
     }
 }
 
-public struct FlyingBottle {
+/// One display as the reminder sees it. Points, origin at the top left.
+public struct ScreenSpace: Equatable, Sendable {
+    public var size: CGSize
+    /// The part not covered by the menu bar or the Dock.
+    public var visible: CGRect
+
+    public init(size: CGSize, visible: CGRect) {
+        self.size = size
+        self.visible = visible
+    }
+
+    /// A display with only a menu bar of `topInset` points.
+    public init(size: CGSize, topInset: Double = 24) {
+        self.init(size: size, visible: CGRect(x: 0, y: topInset, width: size.width,
+                                              height: max(0, size.height - topInset)))
+    }
+}
+
+public struct FlyingBottle: Equatable, Sendable {
     public var position: CGPoint
     public var velocity: CGVector
     public var angle: Double
     public let spin: Double
-    public var age: Double = 0
+    public var age = 0.0
+    /// Bottles grow as they fly, as if coming towards the viewer.
     public var scale: Double { min(2.0 + age * 1.35, 4.3) }
 }
 
-public struct WaterParticle {
+public struct Splash: Equatable, Sendable {
     public var position: CGPoint
     public var velocity: CGVector
-    public var age: Double = 0
+    public var age = 0.0
     public let lifetime: Double
     public let size: Double
 }
 
-/// All coordinates are in points, with the origin at the top left.
-/// Keeping the animation independent of windows lets previews and tests use
-/// the same poses, trajectories and state transitions as the desktop app.
-public struct ReminderScene {
-    public static let descentDuration = 1.85
-    /// Long enough to pick up a glass and take a few sips. The drink counts
-    /// only when this has run out, so a reflex click cannot dismiss a reminder.
-    public static let standardDrinkingDuration = 20.0
-    public static let acknowledgmentDuration = 0.55
-    public static let ascentDuration = 2.05
-    public static let throwPeriod = 1.35
-    public static let releaseTime = 0.58
-
-    public private(set) var viewport: CGSize
-    public private(set) var topInset: Double
-    public private(set) var visibleBounds: CGRect
-    public let entrance: ReminderEntrance
-    public private(set) var phase: ReminderPhase = .descending
-    public let appearance: ReminderAppearance
-    /// A settings-page preview: it looks the same but records nothing.
-    public let isPreview: Bool
-    /// Shorter only where the artwork has to fit a drink into a few seconds.
-    public let drinkingDuration: Double
-    public private(set) var phaseTime = 0.0
-    public private(set) var time = 0.0
-    public private(set) var bottles: [FlyingBottle] = []
-    public private(set) var particles: [WaterParticle] = []
-    public private(set) var throwCount = 0
-    public var isHovered = false
-    private var retirementStart = CGPoint.zero
-    /// A click during the entrance starts the drink once the character arrives.
-    private var drinksOnArrival = false
-
-    public init(viewport: CGSize, topInset: Double = 24,
-                appearance: ReminderAppearance = .init(), isPreview: Bool = false,
-                entrance: ReminderEntrance = .init(), visibleBounds: CGRect? = nil,
-                drinkingDuration: Double = standardDrinkingDuration) {
-        self.drinkingDuration = drinkingDuration
-        self.viewport = viewport
-        self.topInset = topInset
-        self.appearance = appearance
-        self.isPreview = isPreview
-        self.entrance = entrance
-        self.visibleBounds = visibleBounds ?? CGRect(x: 0, y: topInset, width: viewport.width,
-                                                     height: max(0, viewport.height - topInset))
+/// The animated reminder as numbers: where the mascot is, what it is doing,
+/// which bottles are in the air. It knows nothing about windows, so the app,
+/// the artwork and the tests all run the very same motion.
+public struct ReminderScene: Equatable, Sendable {
+    public enum Phase: String, Sendable {
+        /// Coming in from the edge.
+        case entering
+        /// In place, throwing bottles until the person answers.
+        case asking
+        /// Drinking along with the person.
+        case drinking
+        /// A short wave once the drink is done.
+        case cheering
+        /// Going back the way it came.
+        case leaving
+        case gone
     }
 
-    public var target: CGPoint {
-        // Leave room for the sprite, the bubble to its inward side and the
-        // fixed buttons below it, including a Dock on any screen edge.
-        let bounds = visibleBounds
+    public static let entranceTime = 1.85
+    /// Long enough to pick up a glass and take a few sips. A drink counts
+    /// only when this has run out, so a reflex click dismisses nothing.
+    public static let standardDrinkTime = 20.0
+    public static let cheerTime = 0.55
+    public static let exitTime = 2.05
+    public static let throwPeriod = 1.35
+    /// Into each throw, when the bottle leaves the hand.
+    public static let releaseTime = 0.58
+
+    public private(set) var screen: ScreenSpace
+    public let entrance: Entrance
+    public let look: Look
+    /// A preview from the settings: it looks the same and records nothing.
+    public let isPreview: Bool
+    /// Shorter only where artwork has to fit a drink into a few seconds.
+    public let drinkTime: Double
+    public private(set) var phase = Phase.entering
+    public private(set) var phaseTime = 0.0
+    public private(set) var bottles: [FlyingBottle] = []
+    public private(set) var splashes: [Splash] = []
+    public private(set) var throwCount = 0
+    public var isHovered = false
+    /// Where the mascot stood when it turned to leave.
+    private var exitStart = CGPoint.zero
+    /// A click during the entrance starts the drink on arrival.
+    public private(set) var willDrinkOnArrival = false
+
+    public init(screen: ScreenSpace, look: Look = .init(), entrance: Entrance = .init(),
+                isPreview: Bool = false, drinkTime: Double = standardDrinkTime) {
+        self.screen = screen
+        self.look = look
+        self.entrance = entrance
+        self.isPreview = isPreview
+        self.drinkTime = drinkTime
+    }
+
+    // MARK: Where things are
+
+    /// Where the mascot comes to rest. It leaves room for the bubble on its
+    /// inward side and the buttons below, clear of the menu bar and the Dock.
+    public var restingPoint: CGPoint {
+        let bounds = screen.visible
         let minX = bounds.minX + min(120, bounds.width / 2)
         let maxX = max(minX, bounds.maxX - 120)
         let minY = bounds.minY + min(100, bounds.height / 2)
@@ -107,10 +143,13 @@ public struct ReminderScene {
         case .left: point = CGPoint(x: minX, y: alongY)
         case .right: point = CGPoint(x: maxX, y: alongY)
         }
-        return CGPoint(x: (point.x / 4).rounded() * 4, y: (point.y / 4).rounded() * 4)
+        return point.snapped(to: 4)
     }
 
+    /// Only an entrance from the top comes down a rope.
     public var usesRope: Bool { entrance.edge == .top }
+
+    /// The mascot faces into the screen; its bubble and bottles go that way.
     public var facesLeft: Bool {
         switch entrance.edge {
         case .left: return false
@@ -119,74 +158,74 @@ public struct ReminderScene {
         }
     }
 
+    /// Seconds into the current throw.
     public var throwCycle: Double {
-        phase == .reminding ? phaseTime.truncatingRemainder(dividingBy: Self.throwPeriod) : 0
+        phase == .asking ? phaseTime.truncatingRemainder(dividingBy: Self.throwPeriod) : 0
     }
 
-    public var characterPosition: CGPoint {
+    public var mascotPosition: CGPoint {
+        let sideways = entrance.edge == .left || entrance.edge == .right
+        func travel(from start: CGPoint, to end: CGPoint, progress: Double, sway: Double) -> CGPoint {
+            CGPoint(x: start.x + (end.x - start.x) * progress + (sideways ? 0 : sway),
+                    y: start.y + (end.y - start.y) * progress + (sideways ? sway : 0))
+        }
+        let target = restingPoint
         switch phase {
-        case .descending:
-            let t = min(phaseTime / Self.descentDuration, 1)
-            let ease = 1 - pow(1 - t, 3)
-            let start = offscreenPoint(alignedWith: target)
-            let sway = sin(t * .pi * 2) * 8
-            let horizontal = entrance.edge == .left || entrance.edge == .right
-            return CGPoint(x: start.x + (target.x - start.x) * ease + (horizontal ? 0 : sway),
-                           y: start.y + (target.y - start.y) * ease + (horizontal ? sway : 0))
-        case .reminding:
+        case .entering:
+            let t = min(phaseTime / Self.entranceTime, 1)
+            return travel(from: offscreen(beside: target), to: target, progress: 1 - pow(1 - t, 3),
+                          sway: sin(t * .pi * 2) * 8)
+        case .asking:
             // Only Claude throws, so only Claude recoils.
-            let recoil = appearance.character == .claude
-                && throwCycle > Self.releaseTime && throwCycle < 0.84
-                ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
+            let recoiling = look.mascot == .claude && throwCycle > Self.releaseTime && throwCycle < 0.84
+            let recoil = recoiling ? sin((throwCycle - Self.releaseTime) / 0.26 * .pi) * 6 : 0
             return CGPoint(x: target.x + (facesLeft ? recoil : -recoil) + sin(phaseTime * 2.1) * 3,
                            y: target.y + sin(phaseTime * 3.2) * 3)
         case .drinking:
             return target
-        case .acknowledging:
-            return CGPoint(x: retirementStart.x, y: retirementStart.y - sin(phaseTime * .pi / 0.55) * 5)
-        case .ascending:
-            let t = min(phaseTime / Self.ascentDuration, 1)
-            // Each climbing cycle has a short pull and a longer grip change.
-            let step = floor(t * 7)
-            let part = t * 7 - step
-            let pull = min(part / 0.64, 1)
-            let progress = usesRope ? min((step + pull * pull * (3 - 2 * pull)) / 7, 1)
-                : t * t * (3 - 2 * t)
-            let end = offscreenPoint(alignedWith: retirementStart)
-            let horizontal = entrance.edge == .left || entrance.edge == .right
-            let sway = sin(t * .pi * 14) * 3
-            return CGPoint(x: retirementStart.x + (end.x - retirementStart.x) * progress + (horizontal ? 0 : sway),
-                           y: retirementStart.y + (end.y - retirementStart.y) * progress + (horizontal ? sway : 0))
-        case .finished:
-            return offscreenPoint(alignedWith: target)
+        case .cheering:
+            return CGPoint(x: exitStart.x, y: exitStart.y - sin(phaseTime * .pi / 0.55) * 5)
+        case .leaving:
+            let t = min(phaseTime / Self.exitTime, 1)
+            // Up a rope in seven pulls, each a short heave and a longer change
+            // of grip; along the ground in one smooth slide.
+            let pull = floor(t * 7)
+            let heave = min((t * 7 - pull) / 0.64, 1)
+            let progress = usesRope ? min((pull + heave * heave * (3 - 2 * heave)) / 7, 1) : t * t * (3 - 2 * t)
+            return travel(from: exitStart, to: offscreen(beside: exitStart), progress: progress,
+                          sway: sin(t * .pi * 14) * 3)
+        case .gone:
+            return offscreen(beside: target)
         }
     }
 
-    private func offscreenPoint(alignedWith point: CGPoint) -> CGPoint {
+    private func offscreen(beside point: CGPoint) -> CGPoint {
         switch entrance.edge {
         case .top: return CGPoint(x: point.x, y: -100)
-        case .bottom: return CGPoint(x: point.x, y: viewport.height + 100)
+        case .bottom: return CGPoint(x: point.x, y: screen.size.height + 100)
         case .left: return CGPoint(x: -110, y: point.y)
-        case .right: return CGPoint(x: viewport.width + 110, y: point.y)
+        case .right: return CGPoint(x: screen.size.width + 110, y: point.y)
         }
     }
 
-    public var isInteractive: Bool { phase == .descending || phase == .reminding }
-    public var isClimbing: Bool { phase == .ascending && usesRope }
-    public var hasAcknowledged: Bool { phase == .acknowledging || phase == .ascending || phase == .finished }
-    /// From 0 to 1 over the drink; 0 in every other phase.
-    public var drinkingProgress: Double {
-        phase == .drinking ? min(phaseTime / drinkingDuration, 1) : 0
-    }
+    // MARK: What it is doing
 
-    /// The person says they are going to drink. The character stops throwing
-    /// and drinks along; false when a drink is already under way or over.
+    /// The mascot itself can still be clicked to start a drink.
+    public var isClickable: Bool { (phase == .entering && !willDrinkOnArrival) || phase == .asking }
+    public var isClimbing: Bool { phase == .leaving && usesRope }
+    /// The drink-along ran to its end.
+    public var hasFinishedDrink: Bool { phase == .cheering || phase == .leaving || phase == .gone }
+    /// From 0 to 1 over the drink; 0 in every other phase.
+    public var drinkProgress: Double { phase == .drinking ? min(phaseTime / drinkTime, 1) : 0 }
+
+    /// The person says they will drink. The mascot stops throwing and drinks
+    /// along. False when a drink is already under way or over.
     @discardableResult
     public mutating func beginDrinking() -> Bool {
         switch phase {
-        case .descending where !drinksOnArrival:
-            drinksOnArrival = true
-        case .reminding:
+        case .entering where !willDrinkOnArrival:
+            willDrinkOnArrival = true
+        case .asking:
             phase = .drinking
             phaseTime = 0
         default:
@@ -196,51 +235,47 @@ public struct ReminderScene {
         return true
     }
 
-    public mutating func resize(to size: CGSize, topInset: Double, visibleBounds: CGRect? = nil) {
-        let oldTarget = target
-        viewport = size
-        self.topInset = topInset
-        self.visibleBounds = visibleBounds ?? CGRect(x: 0, y: topInset, width: size.width,
-                                                     height: max(0, size.height - topInset))
-        retirementStart.x += target.x - oldTarget.x
-        retirementStart.y += target.y - oldTarget.y
+    /// The display changed size, or its menu bar or Dock moved.
+    public mutating func fit(_ next: ScreenSpace) {
+        let before = restingPoint
+        screen = next
+        exitStart.x += restingPoint.x - before.x
+        exitStart.y += restingPoint.y - before.y
     }
 
     public mutating func advance(by elapsed: Double) {
-        guard elapsed.isFinite, elapsed > 0, phase != .finished else { return }
-        // Small integration steps prevent throws being skipped during a slow frame.
-        var remaining = elapsed
-        while remaining > 0.000_001, phase != .finished {
-            let dt = min(remaining, 1.0 / 60)
-            step(dt)
-            remaining -= dt
+        guard elapsed.isFinite, elapsed > 0 else { return }
+        // Small fixed steps, so a slow frame never skips a throw.
+        var left = elapsed
+        while left > 0.000_001, phase != .gone {
+            let step = min(left, 1.0 / 60)
+            self.step(step)
+            left -= step
         }
     }
 
     private mutating func step(_ dt: Double) {
-        time += dt
-        let previousPhaseTime = phaseTime
+        let before = phaseTime
         phaseTime += dt
 
         switch phase {
-        case .descending where phaseTime >= Self.descentDuration:
-            phase = drinksOnArrival ? .drinking : .reminding
-            phaseTime -= Self.descentDuration
-        case .reminding:
-            let previousCycle = floor((previousPhaseTime - Self.releaseTime) / Self.throwPeriod)
-            let currentCycle = floor((phaseTime - Self.releaseTime) / Self.throwPeriod)
-            if currentCycle > previousCycle { throwBottle() }
-        case .drinking where phaseTime >= drinkingDuration:
-            retirementStart = characterPosition
-            phase = .acknowledging
-            phaseTime -= drinkingDuration
-        case .acknowledging where phaseTime >= Self.acknowledgmentDuration:
-            phase = .ascending
-            phaseTime -= Self.acknowledgmentDuration
-        case .ascending where phaseTime >= Self.ascentDuration:
-            phase = .finished
+        case .entering where phaseTime >= Self.entranceTime:
+            phase = willDrinkOnArrival ? .drinking : .asking
+            phaseTime -= Self.entranceTime
+        case .asking:
+            func throwsDone(by time: Double) -> Double { floor((time - Self.releaseTime) / Self.throwPeriod) }
+            if throwsDone(by: phaseTime) > throwsDone(by: before) { throwBottle() }
+        case .drinking where phaseTime >= drinkTime:
+            exitStart = mascotPosition
+            phase = .cheering
+            phaseTime -= drinkTime
+        case .cheering where phaseTime >= Self.cheerTime:
+            phase = .leaving
+            phaseTime -= Self.cheerTime
+        case .leaving where phaseTime >= Self.exitTime:
+            phase = .gone
             bottles.removeAll()
-            particles.removeAll()
+            splashes.removeAll()
         default:
             break
         }
@@ -252,36 +287,34 @@ public struct ReminderScene {
             bottles[index].position.y += bottles[index].velocity.dy * dt
             bottles[index].angle += bottles[index].spin * dt
         }
-
-        let floor = min(viewport.height, visibleBounds.maxY)
-        for bottle in bottles where bottle.position.y > floor - 25 {
-            splash(at: CGPoint(x: min(max(bottle.position.x, visibleBounds.minX + 20), visibleBounds.maxX - 20),
-                               y: floor - 18))
+        // A bottle bursts on the bottom of the usable screen.
+        let ground = min(screen.size.height, screen.visible.maxY)
+        for bottle in bottles where bottle.position.y > ground - 25 {
+            splash(at: CGPoint(x: min(max(bottle.position.x, screen.visible.minX + 20), screen.visible.maxX - 20),
+                               y: ground - 18))
         }
-        bottles.removeAll { $0.position.y > floor - 25 || $0.age > 5 }
+        bottles.removeAll { $0.position.y > ground - 25 || $0.age > 5 }
 
-        for index in particles.indices {
-            particles[index].age += dt
-            particles[index].velocity.dy += 540 * dt
-            particles[index].position.x += particles[index].velocity.dx * dt
-            particles[index].position.y += particles[index].velocity.dy * dt
+        for index in splashes.indices {
+            splashes[index].age += dt
+            splashes[index].velocity.dy += 540 * dt
+            splashes[index].position.x += splashes[index].velocity.dx * dt
+            splashes[index].position.y += splashes[index].velocity.dy * dt
         }
-        particles.removeAll { $0.age > $0.lifetime }
+        splashes.removeAll { $0.age > $0.lifetime }
     }
 
     private mutating func throwBottle() {
-        guard appearance.character == .claude else { return }
+        guard look.mascot == .claude else { return }
+        // Four throws of different strength and spin, in rotation.
         let variation = throwCount % 4
-        let velocities = [245.0, 90.0, 145.0, 155.0]
-        let spins = [-2.8, 2.1, -1.6, 2.9]
-        let point = characterPosition
+        let speed = [245.0, 90.0, 145.0, 155.0][variation]
+        let spin = [-2.8, 2.1, -1.6, 2.9][variation]
+        let from = mascotPosition
         let direction = facesLeft ? -1.0 : 1.0
-        bottles.append(FlyingBottle(
-            position: CGPoint(x: point.x + direction * 54, y: point.y + 12),
-            velocity: CGVector(dx: direction * velocities[variation], dy: -130 - Double(variation) * 12),
-            angle: direction * -0.4,
-            spin: direction * spins[variation]
-        ))
+        bottles.append(FlyingBottle(position: CGPoint(x: from.x + direction * 54, y: from.y + 12),
+                                    velocity: CGVector(dx: direction * speed, dy: -130 - Double(variation) * 12),
+                                    angle: direction * -0.4, spin: direction * spin))
         throwCount += 1
     }
 
@@ -289,12 +322,25 @@ public struct ReminderScene {
         for index in 0..<9 {
             let angle = .pi + Double(index) / 8 * .pi
             let speed = 90 + Double(index % 3) * 55
-            particles.append(WaterParticle(
-                position: point,
-                velocity: CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed - 70),
-                lifetime: 0.38 + Double(index % 3) * 0.08,
-                size: Double(3 + index % 3) * 2
-            ))
+            splashes.append(Splash(position: point,
+                                   velocity: CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed - 70),
+                                   lifetime: 0.38 + Double(index % 3) * 0.08,
+                                   size: Double(3 + index % 3) * 2))
         }
+    }
+}
+
+extension CGPoint {
+    /// The art sits on a pixel grid; positions snap to it before drawing.
+    public func snapped(to grid: Double) -> CGPoint {
+        CGPoint(x: (x / grid).rounded() * grid, y: (y / grid).rounded() * grid)
+    }
+}
+
+extension CGRect {
+    /// The part inside `bounds`, or nil when nothing is.
+    func clipped(to bounds: CGRect) -> CGRect? {
+        let result = intersection(bounds)
+        return result.isNull || result.isEmpty ? nil : result
     }
 }

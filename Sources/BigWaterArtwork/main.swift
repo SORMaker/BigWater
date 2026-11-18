@@ -4,159 +4,136 @@ import UniformTypeIdentifiers
 import BigWaterCore
 import BigWaterArt
 
-enum ArtworkError: Error { case cannotEncodeImage, cannotCreateGIF, cannotFinishGIF }
+// Renders the app icon and the pictures in `docs/` with the same scene and
+// painter the app uses, so the documentation cannot drift from the product.
+//
+//     swift run BigWaterArtwork [output directory]
+
+enum ArtworkError: Error { case cannotEncode, cannotWriteGIF }
+
+func bitmap(_ image: NSImage) throws -> NSBitmapImageRep {
+    guard let bitmap = image.representations.first as? NSBitmapImageRep else { throw ArtworkError.cannotEncode }
+    return bitmap
+}
 
 func savePNG(_ image: NSImage, to url: URL) throws {
-    guard let bitmap = image.representations.first as? NSBitmapImageRep,
-          let data = bitmap.representation(using: .png, properties: [:]) else {
-        throw ArtworkError.cannotEncodeImage
+    guard let data = try bitmap(image).representation(using: .png, properties: [:]) else {
+        throw ArtworkError.cannotEncode
     }
     try data.write(to: url)
 }
 
+/// A looping GIF at 12 frames a second.
+func saveGIF(frames: Int, to url: URL, frame: (Int) throws -> NSImage) throws {
+    guard let file = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, frames, nil)
+    else { throw ArtworkError.cannotWriteGIF }
+    CGImageDestinationSetProperties(file, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+    for index in 0..<frames {
+        guard let image = try bitmap(frame(index)).cgImage else { throw ArtworkError.cannotEncode }
+        CGImageDestinationAddImage(file, image, [kCGImagePropertyGIFDictionary:
+            [kCGImagePropertyGIFDelayTime: 1.0 / 12]] as CFDictionary)
+    }
+    guard CGImageDestinationFinalize(file) else { throw ArtworkError.cannotWriteGIF }
+}
+
 func label(_ text: String, at point: CGPoint, size: Double, color: NSColor, serif: Bool = false) {
-    let base = NSFont.systemFont(ofSize: size, weight: serif ? .semibold : .regular)
-    let font: NSFont
-    if serif, let descriptor = base.fontDescriptor.withDesign(.serif) {
-        font = NSFont(descriptor: descriptor, size: size) ?? base
-    } else {
-        font = base
+    var font = NSFont.systemFont(ofSize: size, weight: serif ? .semibold : .regular)
+    if serif, let descriptor = font.fontDescriptor.withDesign(.serif) {
+        font = NSFont(descriptor: descriptor, size: size) ?? font
     }
     (text as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: color])
 }
 
+func fill(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: NSColor, in context: CGContext) {
+    Painter.fill(CGRect(x: x, y: y, width: width, height: height), color, in: context)
+}
+
+/// A stepped cream tile with an oversized bottle, drawn on a 1024 grid.
 func appIcon(size: Double) -> NSImage {
-    PixelArt.image(size: CGSize(width: size, height: size), backingScale: 1) { context in
-        let factor = size / 1_024
-        context.scaleBy(x: factor, y: factor)
-        // A stepped, cream tile and an oversized mineral-water bottle.
-        PixelArt.rect(context, 144, 32, 736, 960, WaterPalette.cream)
-        PixelArt.rect(context, 80, 64, 864, 896, WaterPalette.cream)
-        PixelArt.rect(context, 48, 112, 928, 800, WaterPalette.cream)
-        PixelArt.rect(context, 32, 160, 960, 704, WaterPalette.cream)
-        PixelArt.bottle(in: context, at: CGPoint(x: 512, y: 512), scale: 24, angle: .pi / 12)
-        PixelArt.rect(context, 756, 168, 24, 88, WaterPalette.clay)
-        PixelArt.rect(context, 724, 200, 88, 24, WaterPalette.clay)
-        PixelArt.rect(context, 234, 736, 20, 68, WaterPalette.blue)
-        PixelArt.rect(context, 210, 760, 68, 20, WaterPalette.blue)
+    Painter.image(size: CGSize(width: size, height: size), scale: 1) { context in
+        context.scaleBy(x: size / 1_024, y: size / 1_024)
+        fill(144, 32, 736, 960, Palette.cream, in: context)
+        fill(80, 64, 864, 896, Palette.cream, in: context)
+        fill(48, 112, 928, 800, Palette.cream, in: context)
+        fill(32, 160, 960, 704, Palette.cream, in: context)
+        Painter.bottle(at: CGPoint(x: 512, y: 512), scale: 24, angle: .pi / 12, in: context)
+        // Two sparkles.
+        fill(756, 168, 24, 88, Palette.clay, in: context)
+        fill(724, 200, 88, 24, Palette.clay, in: context)
+        let blue = Palette.accent(.blue).base
+        fill(234, 736, 20, 68, blue, in: context)
+        fill(210, 760, 68, 20, blue, in: context)
     }
 }
 
+/// Four moments of a reminder from the top edge, side by side.
 func storyboard() -> NSImage {
-    PixelArt.image(size: CGSize(width: 960, height: 362), backingScale: 1) { context in
-        PixelArt.rect(context, 0, 0, 960, 362, WaterPalette.cream)
-        label("Big Water", at: CGPoint(x: 32, y: 20), size: 30, color: WaterPalette.ink, serif: true)
+    let panels: [(phase: ReminderScene.Phase, time: Double, title: String, caption: String)] = [
+        (.entering, 0.6, "SLIDE", "沿绳子滑下来"),
+        (.asking, 0.64, "THROW!", "持续扔水，等你点击"),
+        (.drinking, 0.8, "DRINK", "点击后陪你喝 20 秒"),
+        (.leaving, 0.24, "CLIMB", "喝完记录，沿绳爬回去")
+    ]
+    return Painter.image(size: CGSize(width: 960, height: 362), scale: 1) { context in
+        fill(0, 0, 960, 362, Palette.cream, in: context)
+        label("Big Water", at: CGPoint(x: 32, y: 20), size: 30, color: Palette.ink, serif: true)
         label("蓝帽子 Claude · 大瓶矿泉水 · 点一下，陪你喝完再收工", at: CGPoint(x: 34, y: 62), size: 13,
-              color: WaterPalette.rope)
-        let phases: [ReminderPhase] = [.descending, .reminding, .drinking, .ascending]
-        let times = [0.6, 0.64, 0.8, 0.24]
-        let titles = ["SLIDE", "THROW!", "DRINK", "CLIMB"]
-        let captions = ["沿绳子滑下来", "持续扔水，等你点击", "点击后陪你喝 20 秒", "喝完记录，沿绳爬回去"]
-        for index in 0..<4 {
+              color: Palette.rope)
+        for (index, panel) in panels.enumerated() {
             let x = 28.0 + Double(index) * 234
-            PixelArt.rect(context, x, 102, 218, 224, .white.withAlphaComponent(0.55))
+            fill(x, 102, 218, 224, .white.withAlphaComponent(0.55), in: context)
             context.saveGState()
             context.translateBy(x: x, y: 110)
-            let point = CGPoint(x: 112, y: 106)
-            PixelArt.rope(in: context, x: 64, from: 0, to: 146)
-            PixelArt.claude(in: context, at: point, phase: phases[index], poseTime: times[index])
-            if index == 1 {
-                PixelArt.bottle(in: context, at: CGPoint(x: 168, y: 142), scale: 2.5, angle: 0.55)
+            Painter.rope(x: 64, from: 0, to: 146, in: context)
+            Painter.mascot(.claude, pose: Pose(phase: panel.phase, time: panel.time), at: CGPoint(x: 112, y: 108),
+                           in: context)
+            if panel.phase == .asking {
+                Painter.bottle(at: CGPoint(x: 168, y: 142), scale: 2.5, angle: 0.55, in: context)
             }
-            PixelArt.pixelText(titles[index], in: context,
-                              at: CGPoint(x: (218 - Double(titles[index].count) * 12) / 2, y: 166),
-                              scale: 2, color: WaterPalette.clay)
-            label(captions[index], at: CGPoint(x: index == 0 ? 73 : 49, y: 194), size: 12,
-                  color: WaterPalette.rope)
+            context.saveGState()
+            context.translateBy(x: (218 - Sprite.textWidth(panel.title, scale: 2)) / 2, y: 166)
+            Painter.blocks(Sprite.text(panel.title, scale: 2, ink: .clay), theme: .blue, in: context)
+            context.restoreGState()
+            label(panel.caption, at: CGPoint(x: index == 0 ? 73 : 49, y: 194), size: 12, color: Palette.rope)
             context.restoreGState()
         }
     }
 }
 
-func animationFrame(_ scene: ReminderScene) -> NSImage {
-    PixelArt.image(size: scene.viewport, backingScale: 1) { context in
-        PixelArt.rect(context, 0, 0, scene.viewport.width, scene.viewport.height, WaterPalette.cream)
-        label("Big Water", at: CGPoint(x: 32, y: 32), size: 36, color: WaterPalette.ink, serif: true)
-        label("一个有点执着的喝水提醒。", at: CGPoint(x: 34, y: 84), size: 15, color: WaterPalette.rope)
-        SceneRenderer.draw(scene, in: context)
-        let caption = scene.hasAcknowledged ? "喝完记一次，沿绳子爬走"
+/// A real 20-second drink would not fit a loop of under ten seconds.
+let shortDrink = 2.4
+let frameCount = 108
+/// The frame at which the person "clicks".
+let clickFrame = 46
+
+func heroFrame(_ scene: ReminderScene) -> NSImage {
+    Painter.image(size: scene.screen.size, scale: 1) { context in
+        fill(0, 0, scene.screen.size.width, scene.screen.size.height, Palette.cream, in: context)
+        label("Big Water", at: CGPoint(x: 32, y: 32), size: 36, color: Palette.ink, serif: true)
+        label("一个有点执着的喝水提醒。", at: CGPoint(x: 34, y: 84), size: 15, color: Palette.rope)
+        Painter.scene(scene, in: context)
+        let caption = scene.hasFinishedDrink ? "喝完记一次，沿绳子爬走"
             : (scene.phase == .drinking ? "点击后停止扔水，陪你喝一会儿" : "蓝帽子上班 · 点击 Claude 一起喝水")
-        label(caption, at: CGPoint(x: 34, y: 592), size: 13, color: WaterPalette.rope)
+        label(caption, at: CGPoint(x: 34, y: 592), size: 13, color: Palette.rope)
     }
 }
 
-/// The GIFs loop in under ten seconds, so their drink is cut short.
-let demoDrinkingDuration = 2.4
-
-func saveAnimation(to url: URL) throws {
-    let count = 108
-    let fps = 12.0
-    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString,
-                                                            count, nil) else {
-        throw ArtworkError.cannotCreateGIF
-    }
-    CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
-        [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
-    var scene = ReminderScene(viewport: CGSize(width: 960, height: 640), topInset: 0,
-                              drinkingDuration: demoDrinkingDuration)
-    for frame in 0..<count {
-        if frame == 46 { scene.beginDrinking() }
-        let image = animationFrame(scene)
-        guard let bitmap = image.representations.first as? NSBitmapImageRep,
-              let cgImage = bitmap.cgImage else { throw ArtworkError.cannotEncodeImage }
-        CGImageDestinationAddImage(destination, cgImage, [kCGImagePropertyGIFDictionary:
-            [kCGImagePropertyGIFDelayTime: 1 / fps]] as CFDictionary)
-        scene.advance(by: 1 / fps)
-    }
-    guard CGImageDestinationFinalize(destination) else { throw ArtworkError.cannotFinishGIF }
-}
-
-/// The same four paths as the desktop overlay, shown together for visual QA.
-func entranceFrame(_ scenes: [ReminderScene]) -> NSImage {
-    PixelArt.image(size: CGSize(width: 1_280, height: 840), backingScale: 1) { context in
-        let titles = ["TOP · 顶部沿绳滑下", "BOTTOM · 底部升起", "LEFT · 左侧滑入", "RIGHT · 右侧滑入"]
+/// The four entrances at once, as they look on the desktop.
+func entrancesFrame(_ scenes: [ReminderScene]) -> NSImage {
+    let titles = ["TOP · 顶部沿绳滑下", "BOTTOM · 底部升起", "LEFT · 左侧滑入", "RIGHT · 右侧滑入"]
+    return Painter.image(size: CGSize(width: 1_280, height: 840), scale: 1) { context in
         for (index, scene) in scenes.enumerated() {
             context.saveGState()
             context.translateBy(x: Double(index % 2) * 640, y: Double(index / 2) * 420)
-            context.clip(to: CGRect(origin: .zero, size: scene.viewport))
-            PixelArt.rect(context, 0, 0, 640, 420, WaterPalette.cream)
-            PixelArt.rect(context, 0, 0, 640, 2, WaterPalette.ropeLight)
-            PixelArt.rect(context, 0, 0, 2, 420, WaterPalette.ropeLight)
-            label(titles[index], at: CGPoint(x: 24, y: 18), size: 16, color: WaterPalette.ink)
-            SceneRenderer.draw(scene, in: context)
+            context.clip(to: CGRect(origin: .zero, size: scene.screen.size))
+            fill(0, 0, 640, 420, Palette.cream, in: context)
+            fill(0, 0, 640, 2, Palette.ropeLight, in: context)
+            fill(0, 0, 2, 420, Palette.ropeLight, in: context)
+            label(titles[index], at: CGPoint(x: 24, y: 18), size: 16, color: Palette.ink)
+            Painter.scene(scene, in: context)
             context.restoreGState()
         }
     }
-}
-
-func saveEntranceAnimation(to directory: URL) throws {
-    let count = 108
-    let fps = 12.0
-    let url = directory.appendingPathComponent("entrances.gif")
-    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString,
-                                                            count, nil) else {
-        throw ArtworkError.cannotCreateGIF
-    }
-    CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
-        [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
-    var scenes = ReminderEdge.allCases.map {
-        ReminderScene(viewport: CGSize(width: 640, height: 420), topInset: 44,
-                      entrance: ReminderEntrance(edge: $0, position: 0.5),
-                      drinkingDuration: demoDrinkingDuration)
-    }
-    for frame in 0..<count {
-        if frame == 46 {
-            for index in scenes.indices { scenes[index].beginDrinking() }
-        }
-        let image = entranceFrame(scenes)
-        if frame == 30 { try savePNG(image, to: directory.appendingPathComponent("entrances.png")) }
-        guard let bitmap = image.representations.first as? NSBitmapImageRep,
-              let cgImage = bitmap.cgImage else { throw ArtworkError.cannotEncodeImage }
-        CGImageDestinationAddImage(destination, cgImage, [kCGImagePropertyGIFDictionary:
-            [kCGImagePropertyGIFDelayTime: 1 / fps]] as CFDictionary)
-        for index in scenes.indices { scenes[index].advance(by: 1 / fps) }
-    }
-    guard CGImageDestinationFinalize(destination) else { throw ArtworkError.cannotFinishGIF }
 }
 
 let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "dist/Artwork", isDirectory: true)
@@ -168,9 +145,27 @@ do {
         try savePNG(appIcon(size: Double(points * 2)), to: icons.appendingPathComponent("icon_\(points)x\(points)@2x.png"))
     }
     try savePNG(storyboard(), to: output.appendingPathComponent("storyboard.png"))
-    try savePNG(PixelArt.settingsBottle(), to: output.appendingPathComponent("bottle.png"))
-    try saveAnimation(to: output.appendingPathComponent("animation.gif"))
-    try saveEntranceAnimation(to: output)
+    try savePNG(Painter.panelBottle(), to: output.appendingPathComponent("bottle.png"))
+
+    var hero = ReminderScene(screen: ScreenSpace(size: CGSize(width: 960, height: 640), topInset: 0),
+                             drinkTime: shortDrink)
+    try saveGIF(frames: frameCount, to: output.appendingPathComponent("animation.gif")) { frame in
+        if frame == clickFrame { hero.beginDrinking() }
+        defer { hero.advance(by: 1.0 / 12) }
+        return heroFrame(hero)
+    }
+
+    var entrances = Edge.allCases.map {
+        ReminderScene(screen: ScreenSpace(size: CGSize(width: 640, height: 420), topInset: 44),
+                      entrance: Entrance(edge: $0, position: 0.5), drinkTime: shortDrink)
+    }
+    try saveGIF(frames: frameCount, to: output.appendingPathComponent("entrances.gif")) { frame in
+        if frame == clickFrame { for index in entrances.indices { entrances[index].beginDrinking() } }
+        defer { for index in entrances.indices { entrances[index].advance(by: 1.0 / 12) } }
+        let image = entrancesFrame(entrances)
+        if frame == 30 { try savePNG(image, to: output.appendingPathComponent("entrances.png")) }
+        return image
+    }
     print("Artwork: \(output.path)")
 } catch {
     fputs("Artwork export failed: \(error)\n", stderr)

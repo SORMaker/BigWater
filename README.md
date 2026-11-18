@@ -147,24 +147,13 @@ Big Water 计的是你**实际使用电脑的时间**，不是钟表上过去了
 ## 开发
 
 ```sh
-swift run BigWaterChecks      # 核心检查：计时、存档、动画与绘制
-./Tools/check-session.sh      # 会话检查：驱动真实的 App 类
-./Tools/run.sh --preview      # 构建、启动并立即弹出一次真实提醒
+swift run BigWaterTests          # 全部测试，约 5 秒，不弹任何窗口
+swift run BigWaterTests away     # 只跑名字里带 away 的测试
+./Tools/run.sh --preview         # 构建、替换正在运行的版本，并立即弹出一次真实提醒
 ```
 
-只验证本轮功能时，可使用筛选入口，避免执行未改动的动画检查：
-
-```sh
-swift run BigWaterChecks --filter segmented
-swift run BigWaterChecks --filter 'history corrections'
-swift run BigWaterChecks --filter 'menu status'
-swift run BigWaterSessionChecks --features
-# 只验证跨休息段的提醒重提
-swift run BigWaterSessionChecks --features --filter 'pending reminder'
-```
-
-- 会话检查会在桌面上短暂弹出提醒窗口，需要亮屏的桌面会话。它不会让电脑真的休眠，也不会修改系统时间。
-- `--preview` 会在作息时间内提前弹出一次真实提醒，点小人或“去喝水”并等 20 秒走完后会被记录。运行前请先退出正在运行的 Big Water。
+- 测试用假的时钟、假的系统状态和假的窗口驱动真实的计时、记录和提醒逻辑，不需要亮屏的桌面，也不会让电脑休眠或修改系统时间。
+- `--preview` 会在作息时间内提前弹出一次真实提醒，点小人或“去喝水”并等 20 秒走完后会被记录。脚本会先让正在运行的 Big Water 正常退出。
 - 只需要 Xcode 命令行工具，不依赖 XCTest。更新器使用 [Sparkle 2](https://sparkle-project.org/)，由 Swift Package Manager 下载固定版本。
 
 ### 发布更新
@@ -190,19 +179,19 @@ Sparkle 及所含组件的许可见 [Resources/Sparkle-LICENSE](Resources/Sparkl
 
 | 目录 | 内容 |
 | --- | --- |
-| `Sources/BigWaterCore` | 计时规则、设置、喝水记录、动画状态；不依赖 AppKit 界面 |
-| `Sources/BigWaterArt` | 像素角色、水瓶、配色和场景绘制 |
-| `Sources/BigWaterApp` | 菜单栏、设置面板、存档和透明的提醒窗口 |
+| `Sources/BigWaterCore` | 全部规则：计时、作息、喝水记录、设置与存档、动画状态、像素造型数据、提醒的点击与布局；不依赖 AppKit |
+| `Sources/BigWaterArt` | 配色和画笔：把上面的数据画成像素 |
+| `Sources/BigWaterApp` | App 本身：`AppModel` 集中管理状态，其余是菜单栏、设置面板、存档、系统状态和透明的提醒窗口 |
 | `Sources/BigWater` | 启动 App 的入口 |
 | `Sources/BigWaterArtwork` | 用同一套绘制代码生成图标、分镜图和 GIF |
-| `Tests/` | 核心检查和会话检查 |
+| `Tests/BigWaterTests` | 测试 |
 
-`REVIEW.md` 是一份代码审查记录，`VERIFICATION.md` 是各版本的验证记录，`CLAUDE.md` 是给 Claude Code 的项目说明。
+`VERIFICATION.md` 是各版本的验证记录，`CLAUDE.md` 是给 Claude Code 的项目说明。
 
 ## 已知限制
 
 - 真实的系统休眠和唤醒目前只用模拟通知验证过，还没有在实机上完整测试。
-- `REVIEW.md` 中 V2–V3 两项还需要在实机上确认：V2 角色边缘闪一帧橙色已在代码中修复，需要实机观察；V3 是在系统设置里关掉登录项后开关的显示。V1 涉及的时间输入框已改为下拉选择。
+- 0.5.2 之后的代码整体重写过。计时、记录、存档和画面与重写前逐项比对一致，但提醒窗口的点击、设置面板的操作还需要在实机上逐项确认，详见 `VERIFICATION.md`。
 
 ## 许可
 
